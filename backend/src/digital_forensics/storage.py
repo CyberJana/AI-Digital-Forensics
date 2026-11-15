@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 PART_SIZE = 64 * 1024 * 1024
 READ_SIZE = 1024 * 1024
 MAX_MULTIPART_PARTS = 10_000
+MAX_EVIDENCE_UPLOAD_BYTES = 10 * 1024**3
 
 
 class StorageUnavailable(Exception):
@@ -194,6 +195,8 @@ class EvidenceObjectStore:
             fileobj.seek(0)
         except (OSError, AttributeError) as error:
             raise EvidenceIntegrityError("Evidence upload must be seekable") from error
+        if expected_size > MAX_EVIDENCE_UPLOAD_BYTES:
+            raise EvidenceTooLarge("Evidence exceeds the 10 GiB per-file upload limit")
         if expected_size > PART_SIZE * MAX_MULTIPART_PARTS:
             raise EvidenceTooLarge(
                 "Evidence exceeds the configured S3 multipart limit"
