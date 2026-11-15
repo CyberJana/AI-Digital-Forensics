@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
+from sqlalchemy import select
 
 from digital_forensics.models import (
     CaseAssignment,
@@ -130,9 +131,63 @@ async def test_unknown_adapter_and_adapter_parameters_are_rejected(
         },
         headers=headers,
     )
+    disabled_adapter = await client.post(
+        f"/cases/{case_id}/processing-jobs",
+        json={"evidence_id": evidence_id, "adapter_name": "exiftool-metadata"},
+        headers=headers,
+    )
 
     assert unknown.status_code == 422
     assert unsupported_parameters.status_code == 422
+    assert disabled_adapter.status_code == 503
+    assert disabled_adapter.json()["detail"] == (
+        "Adapter execution is disabled until sandboxing is approved"
+    )
+
+
+@pytest.mark.anyio
+async def test_worker_fails_closed_for_directly_queued_disabled_adapter(
+    client: AsyncClient,
+    app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = create_test_identity(app)
+    authenticate(client, identity)
+    _, _, initial_job = await _create_case_evidence_and_job(client, identity)
+    await client.post(
+        f"/processing-jobs/{initial_job['id']}/cancel",
+        headers={"X-CSRF-Token": str(identity["csrf_token"])},
+    )
+    with app.state.session_factory() as db:
+        evidence = db.scalar(
+            select(EvidenceItem).where(EvidenceItem.evidence_number == "JOB-E1")
+        )
+        assert evidence is not None
+        job = ProcessingJob(
+            case_id=evidence.case_id,
+            evidence_id=evidence.id,
+            requested_by=identity["user_id"],
+            adapter_name="exiftool-metadata",
+            adapter_version="1.0",
+            status=ProcessingJobStatus.QUEUED,
+            parameters={},
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+
+    def unexpected_execution(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("ExifTool must not be executed")
+
+    monkeypatch.setattr("digital_forensics.exiftool.subprocess.run", unexpected_execution)
+
+    assert run_next_job(app.state.session_factory, worker_id="test-worker") is True
+    with app.state.session_factory() as db:
+        failed_job = db.get(ProcessingJob, job_id)
+        assert failed_job is not None
+        assert failed_job.status == ProcessingJobStatus.FAILED
+        assert failed_job.error_code == "adapter_disabled"
+        assert failed_job.attempt_count == 1
 
 
 def test_expired_worker_lease_requeues_job_and_enforces_attempt_limit(

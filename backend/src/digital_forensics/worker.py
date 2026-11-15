@@ -4,7 +4,9 @@ import logging
 import os
 import socket
 import time
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, update
@@ -22,6 +24,7 @@ from digital_forensics.models import (
 )
 from digital_forensics.processing import ProcessingContext, get_adapter
 from digital_forensics.settings import get_settings
+from digital_forensics.working_copy import resolve_verified_working_copy
 
 logger = logging.getLogger(__name__)
 MAX_RESULT_BYTES = 1_000_000
@@ -104,6 +107,8 @@ def run_next_job(
     *,
     worker_id: str,
     lease_seconds: int = 300,
+    working_copy_root: Path | None = None,
+    exiftool_executable: str = "exiftool",
 ) -> bool:
     job_id = claim_next_job(
         session_factory,
@@ -122,6 +127,23 @@ def run_next_job(
         adapter = get_adapter(adapter_name)
         if adapter is None or adapter.version != adapter_version:
             raise RuntimeError("adapter_unavailable")
+        if not adapter.enabled:
+            raise RuntimeError("adapter_disabled")
+        if adapter.name == "exiftool-metadata":
+            if working_copy_root is None:
+                raise RuntimeError("working_copy_root_unconfigured")
+            try:
+                context = replace(
+                    context,
+                    working_copy_path=resolve_verified_working_copy(
+                        working_copy_root,
+                        context.evidence_id,
+                        context.expected_sha256 or "",
+                    ),
+                    exiftool_executable=exiftool_executable,
+                )
+            except (OSError, ValueError) as error:
+                raise RuntimeError("working_copy_invalid") from error
         result = adapter.run(context)
         if not isinstance(result, dict):
             raise ValueError("adapter_result_not_object")
@@ -131,17 +153,27 @@ def run_next_job(
     except Exception as error:
         error_code = str(error) if str(error) in {
             "adapter_unavailable",
+            "adapter_disabled",
             "case_closed",
             "invalid_processing_context",
             "adapter_result_too_large",
             "adapter_result_not_object",
+            "working_copy_root_unconfigured",
+            "working_copy_invalid",
+            "working_copy_digest_mismatch",
+            "working_copy_unavailable",
         } else type(error).__name__
         retryable = error_code not in {
             "adapter_unavailable",
+            "adapter_disabled",
             "case_closed",
             "invalid_processing_context",
             "adapter_result_too_large",
             "adapter_result_not_object",
+            "working_copy_root_unconfigured",
+            "working_copy_invalid",
+            "working_copy_digest_mismatch",
+            "working_copy_unavailable",
         }
         finished = _finish_job(
             session_factory,
@@ -198,6 +230,7 @@ def _load_processing_context(
             evidence_id=job.evidence_id,
             parameters=job.parameters,
             custody_events=events,
+            expected_sha256=evidence.original_sha256,
         )
         return context, job.adapter_name, job.adapter_version
 
@@ -268,6 +301,8 @@ def main() -> None:
                 session_factory,
                 worker_id=worker_id,
                 lease_seconds=args.lease_seconds,
+                working_copy_root=settings.working_copy_root,
+                exiftool_executable=settings.exiftool_executable,
             )
             if not processed:
                 time.sleep(args.poll_interval_seconds)

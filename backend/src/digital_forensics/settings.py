@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -11,6 +12,8 @@ class Settings(BaseSettings):
     environment: Literal["development", "staging", "production"] = "development"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     database_url: SecretStr | None = None
+    working_copy_root: Path | None = None
+    exiftool_executable: str = "exiftool"
     oidc_issuer: str | None = None
     oidc_client_id: str | None = None
     oidc_client_secret: SecretStr | None = None
