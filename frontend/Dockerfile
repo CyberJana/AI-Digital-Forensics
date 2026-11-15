@@ -1,4 +1,4 @@
-FROM node:22-alpine AS dependencies
+FROM node:26-alpine AS dependencies
 
 WORKDIR /app
 COPY frontend/package*.json ./
@@ -8,7 +8,7 @@ RUN if [ -f package-lock.json ]; then \
       npm install --no-audit --no-fund; \
     fi
 
-FROM node:22-alpine AS build
+FROM node:26-alpine AS build
 
 WORKDIR /app
 ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
@@ -17,7 +17,7 @@ COPY --from=dependencies /app/node_modules ./node_modules
 COPY frontend/ ./
 RUN npm run build
 
-FROM node:22-alpine AS runtime
+FROM node:26-alpine AS runtime
 
 ENV NODE_ENV=production \
     PORT=3000 \
