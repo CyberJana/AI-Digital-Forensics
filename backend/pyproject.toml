@@ -33,3 +33,5 @@ testpaths = ["tests"]
 [project.scripts]
 digital-forensics-bootstrap = "digital_forensics.bootstrap:main"
 digital-forensics-hash = "digital_forensics.hashing:main"
+digital-forensics-worker = "digital_forensics.worker:main"
+digital-forensics-copy = "digital_forensics.working_copy:main"

@@ -1,6 +1,6 @@
 # AI Digital Forensics
 
-Foundation for a hybrid local-lab and cloud digital forensics investigation platform. The project is being implemented in controlled milestones; Phases 1–3 provide the API foundation, OIDC-backed identity and organization access controls, and case/evidence metadata with local hashing and custody-chain records.
+Foundation for a hybrid local-lab and cloud digital forensics investigation platform. The project is being implemented in controlled milestones; Phases 1–4 provide the API foundation, OIDC-backed identity and organization access controls, case/evidence metadata, and an initial processing framework.
 
 ## Repository layout
 
@@ -67,6 +67,18 @@ digital-forensics-hash "C:\evidence\image.E01"
 
 Evidence registration accepts metadata and a digest; the API does not receive or independently hash the source file. Evidence binaries are not stored. Hash comparisons therefore record the examiner-submitted digest and must not be interpreted as independent server verification. Acquisition, hash-verification, and custody rows are protected from ordinary updates/deletes by SQLite/PostgreSQL triggers, and custody events are linked by a verifiable hash chain; privileged database access can still bypass database controls.
 
+### Processing framework
+
+Phase 4 adds case-scoped processing jobs, a database-backed queue, a separate worker process, lease recovery with bounded retries, and an adapter contract. Submit the initial `custody-chain-verification` adapter at `/cases/{case_id}/processing-jobs`; it verifies custody metadata only. No forensic parser or evidence-binary processing is included. Start `digital-forensics-worker` in a separate process using the same database configuration as the API. Apply migrations before starting either process.
+
+The local utility creates and verifies a distinct read-only working copy without modifying the source:
+
+```powershell
+digital-forensics-copy "C:\evidence\image.E01" "C:\case-work\image-copy.E01"
+```
+
+The destination directory must exist, and the destination file must not already exist. The utility reports the local working-copy path and its SHA-256 digest; file paths are not accepted by the processing API or stored in job records. The worker runs in a separate process from the API, but this is not an OS-level sandbox. Do not run parsers on real evidence until worker resource isolation, encrypted storage, and key management are designed and validated.
+
 ### Frontend
 
 Requires Node.js 20.9 or newer and npm.
@@ -81,4 +93,4 @@ The dashboard is available at `http://localhost:3000`. The UI is currently a fou
 
 ## Scope and limitations
 
-Encrypted evidence storage, evidence processing, SAML integration, frontend sign-in, invitations, and deployment are not implemented yet. OIDC requires a configured identity provider and PostgreSQL database. MFA depends on identity-provider policy and must be verified before production use. Do not use this foundation with real evidence or for production investigations. See the architecture and roadmap in `docs/ARCHITECTURE.md`.
+Encrypted evidence storage, forensic tool integrations, SAML integration, frontend sign-in, invitations, and deployment are not implemented yet. OIDC requires a configured identity provider and PostgreSQL database. MFA depends on identity-provider policy and must be verified before production use. Do not use this foundation with real evidence or for production investigations. See the architecture and roadmap in `docs/ARCHITECTURE.md`.

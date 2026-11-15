@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     Enum as SqlEnum,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
@@ -39,6 +40,14 @@ class CaseRole(str, Enum):
 class CaseStatus(str, Enum):
     OPEN = "open"
     CLOSED = "closed"
+
+
+class ProcessingJobStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 def utc_now() -> datetime:
@@ -338,3 +347,57 @@ class CustodyEvent(Base):
 
     evidence: Mapped[EvidenceItem] = relationship(back_populates="custody_events")
     actor: Mapped[User] = relationship()
+
+
+class ProcessingJob(Base):
+    __tablename__ = "processing_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "attempt_count >= 0 AND attempt_count <= max_attempts",
+            name="ck_processing_job_attempt_range",
+        ),
+        CheckConstraint("max_attempts > 0", name="ck_processing_job_max_attempts_positive"),
+        Index("ix_processing_jobs_status_created_at", "status", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    case_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("cases.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    evidence_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("evidence_items.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    requested_by: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    adapter_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    adapter_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[ProcessingJobStatus] = mapped_column(
+        SqlEnum(
+            ProcessingJobStatus,
+            name="processing_job_status",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=ProcessingJobStatus.QUEUED,
+    )
+    parameters: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    result: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    worker_id: Mapped[str | None] = mapped_column(String(200))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

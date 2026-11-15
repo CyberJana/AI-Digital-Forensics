@@ -4,13 +4,13 @@
 
 The target is a provider-neutral hybrid platform. A local forensic lab remains the authority for original evidence, acquisition, working copies, hash verification, and sensitive processing. A separately deployable central application manages identities, case metadata, approved processing, search, and reports. The local lab synchronizes only authenticated, explicitly permitted data; evidence and AI inputs remain local unless a case-level authorization and security review allow otherwise.
 
-The application is organized as a modular backend API, a browser dashboard, and separately isolated processing workers. PostgreSQL stores transactional metadata, authorization relationships, custody events, and audit records. Encrypted object storage holds evidence and large raw outputs. OpenSearch indexes derived artifacts, and pgvector supports approved retrieval workloads. Redis and Celery are planned for bounded background jobs. Forensic adapters run only in controlled workers against verified working copies; they preserve raw output and record tool, parser, and execution provenance. Local Ollama is the default inference path, behind an AI provider interface that requires explicit authorization for any cloud provider.
+The application is organized as a modular backend API, a browser dashboard, and separately isolated processing workers. PostgreSQL stores transactional metadata, authorization relationships, custody events, and audit records. Encrypted object storage holds evidence and large raw outputs. OpenSearch indexes derived artifacts, and pgvector supports approved retrieval workloads. Phase 4 starts with a database-backed job queue and a separate worker process; Redis and Celery remain potential scale-out options for a later milestone. The current process boundary is not an OS-level sandbox. Forensic adapters must eventually run in constrained workers against verified working copies and preserve raw output and tool/parser/execution provenance. Local Ollama is the default inference path, behind an AI provider interface that requires explicit authorization for any cloud provider.
 
 Data flow, once those milestones are implemented:
 
 1. Register an acquisition and record metadata and an initial SHA-256 digest; keep the original read-only.
-2. Create and verify a controlled working copy before analysis.
-3. Execute a validated adapter in an isolated worker and retain raw output, logs, exit status, and provenance.
+2. Create and verify a controlled local working copy before analysis.
+3. Execute a validated adapter in a constrained worker and retain raw output, logs, exit status, and provenance.
 4. Normalize derived artifacts into case-scoped records and indexes with access checks.
 5. Present AI output as unapproved analysis with source links; an authorized human reviews findings and reports.
 6. Append custody and audit events for consequential operations.
@@ -35,7 +35,9 @@ These are target compatibility lines, not a resolved lockfile. Resolve and test 
 | Background processing (later milestone) | Celery 5.x |
 | Local AI and retrieval (later milestone) | Ollama, LlamaIndex, pgvector; validate model and extension versions against selected hardware and database |
 
-Phases 1–3 declare bounded dependency ranges in `backend/pyproject.toml` and `frontend/package.json`; no dependency lockfiles have been generated. Backend tests and migration compatibility have been checked with Python 3.15 and SQLite. PostgreSQL and an external identity provider are not configured in this environment, and there is no Node.js or Docker on `PATH`, so production database, live OIDC, and frontend compatibility remain unverified.
+Phases 1–4 declare bounded dependency ranges in `backend/pyproject.toml` and `frontend/package.json`; no dependency lockfiles have been generated. Backend tests and migration compatibility have been checked with Python 3.15 and SQLite. PostgreSQL and an external identity provider are not configured in this environment, and there is no Node.js or Docker on `PATH`, so production database, live OIDC, and frontend compatibility remain unverified.
+
+Phase 4 uses the relational database for job claims and lease recovery, so it adds no Redis/Celery dependencies. The worker and API must use the same migrated database. Production concurrency and row-lock behavior still require verification on PostgreSQL.
 
 ## Deployment strategy
 
@@ -52,7 +54,7 @@ Cloud-specific architecture and pricing should be compared only after the system
 1. **Foundation (complete):** repository structure, API and dashboard skeleton, configuration, logging baseline, and tests.
 2. **Database and authentication (complete):** PostgreSQL migrations, OIDC identity integration, organizations, memberships, role checks, and authorization tests. The initial implementation is OIDC-only; SAML remains future work.
 3. **Cases and evidence (implemented; production use blocked on storage design):** case management and assignments, evidence metadata and acquisition records, local read-only SHA-256 hashing, examiner-submitted hash comparisons, and append-only hash-linked custody events. Evidence binaries are not stored or uploaded.
-4. **Processing framework:** job lifecycle, isolated workers, adapter contracts, verified working copies, and recovery behavior.
+4. **Processing framework (initial implementation):** case-scoped job lifecycle, database queue, separate worker process, adapter contract, verified local working copies, and lease-based recovery. OS-level worker sandboxing and actual forensic adapters remain future work.
 5. **Tool integrations:** implement and validate individual adapters with licensing and provenance checks.
 6. **Analysis modules:** add domain-specific analysis incrementally; mark each module by actual implementation and test status.
 7. **AI investigation:** local inference, retrieval, provider authorization, grounding, and human review.
@@ -91,4 +93,10 @@ The backend now defines organizations, users, external OIDC identities, membersh
 
 Cases are scoped to organizations and assignments, while owner/admin case overrides are limited to organization members. Evidence registration stores metadata, acquisition details, and an examiner-reported initial SHA-256 digest; the local `digital-forensics-hash` utility hashes regular files in chunks and checks file identity, size, and modification time before and after reading. The API does not access the source file or validate that the submitted digest came from that utility. It records digest comparisons, not independent source verification.
 
-Custody events are append-only under ordinary database operations, linked by sequence and SHA-256 hashes, and verified by a read endpoint. Acquisition, hash-verification, and custody rows have SQLite and PostgreSQL mutation-blocking triggers. These controls do not protect against privileged database operators who can alter data or disable triggers. Evidence binaries, encrypted storage, key management, live PostgreSQL behavior, and production readiness remain out of scope; Phase 4 must not begin until the user approves the next milestone.
+Custody events are append-only under ordinary database operations, linked by sequence and SHA-256 hashes, and verified by a read endpoint. Acquisition, hash-verification, and custody rows have SQLite and PostgreSQL mutation-blocking triggers. These controls do not protect against privileged database operators who can alter data or disable triggers. Evidence binaries, encrypted storage, key management, live PostgreSQL behavior, and production readiness remain out of scope.
+
+## Phase 4 status
+
+Processing jobs are case/evidence scoped and restricted to case owners/examiners and organization owners/admins. A database-backed queue claims jobs with row locks and conditional updates, records bounded attempts, and requeues expired worker leases until the configured attempt limit is reached. The worker runs separately from the API and persists bounded JSON results or non-sensitive error codes. Its initial adapter verifies custody-chain metadata; it does not read evidence binaries. A local command creates a hash-verified read-only working copy without modifying the source.
+
+This is an initial process boundary, not a security sandbox: worker CPU, memory, filesystem access, and egress are not constrained at the OS/container level. Long-running adapters, parser execution, result/artifact storage, encrypted evidence storage, and key management remain unimplemented. PostgreSQL locking behavior and production recovery must be exercised before deployment.
