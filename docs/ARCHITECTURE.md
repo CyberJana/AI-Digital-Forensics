@@ -25,7 +25,9 @@ These are target compatibility lines, not a resolved lockfile. Resolve and test 
 | --- | --- |
 | Backend runtime | Python 3.12+ |
 | API | FastAPI 0.x, Pydantic 2.x, pydantic-settings 2.x, Uvicorn 0.x |
-| Backend tests | pytest 8.x, HTTPX 0.x |
+| Persistence and migrations | SQLAlchemy 2.x, Alembic 1.x, psycopg 3.x |
+| Authentication | Authlib 1.x, generic OIDC authorization-code flow, signed state cookie, opaque server-side sessions |
+| Backend tests | pytest 8.x, HTTPX 0.x, SQLite for isolated tests |
 | Frontend runtime | Node.js 20.9+ |
 | Frontend | Next.js 16.x, React 19.x, TypeScript 5.x |
 | Styling | Tailwind CSS 4.x |
@@ -33,7 +35,7 @@ These are target compatibility lines, not a resolved lockfile. Resolve and test 
 | Background processing (later milestone) | Celery 5.x |
 | Local AI and retrieval (later milestone) | Ollama, LlamaIndex, pgvector; validate model and extension versions against selected hardware and database |
 
-Phase 1 declares bounded dependency ranges in `backend/pyproject.toml` and `frontend/package.json`; no dependency lockfiles have been generated. This machine has Python 3.15 but no Node.js or Docker on `PATH`, so compatibility with the documented minimum runtimes and frontend build still needs verification in a supported environment.
+Phases 1 and 2 declare bounded dependency ranges in `backend/pyproject.toml` and `frontend/package.json`; no dependency lockfiles have been generated. Backend tests and migration compatibility have been checked with Python 3.15 and SQLite. PostgreSQL and an external identity provider are not configured in this environment, and there is no Node.js or Docker on `PATH`, so production database, live OIDC, and frontend compatibility remain unverified.
 
 ## Deployment strategy
 
@@ -47,8 +49,8 @@ Cloud-specific architecture and pricing should be compared only after the system
 
 ## Milestones
 
-1. **Foundation (in progress):** repository structure, API and dashboard skeleton, configuration, logging baseline, and tests.
-2. **Database and authentication:** PostgreSQL migrations, organizations, identity integration, RBAC, and authorization tests.
+1. **Foundation (complete):** repository structure, API and dashboard skeleton, configuration, logging baseline, and tests.
+2. **Database and authentication (in progress):** PostgreSQL migrations, OIDC identity integration, organizations, memberships, role checks, and authorization tests. The initial implementation is OIDC-only; SAML remains future work.
 3. **Cases and evidence:** case management, evidence registration, acquisition metadata, hashing, and append-only custody events.
 4. **Processing framework:** job lifecycle, isolated workers, adapter contracts, verified working copies, and recovery behavior.
 5. **Tool integrations:** implement and validate individual adapters with licensing and provenance checks.
@@ -69,6 +71,7 @@ Stop after each milestone for user review and approval before beginning the next
 | --- | --- | --- |
 | Accidental modification or loss of original evidence | Invalidates investigation | Read-only originals, verified working copies, before/after hashes, and tested recovery procedures |
 | Cross-case or cross-tenant access | Exposure and evidentiary integrity failure | Deny-by-default authorization at every data access boundary; automated negative tests |
+| Identity-provider MFA misconfiguration | Unauthorized access despite centralized sign-in | Require provider-enforced MFA and verify the provider's assurance claims before production release |
 | Unapproved evidence transfer to cloud AI | Disclosure of sensitive evidence | Local inference by default; explicit case-level authorization, data classification, and audit before remote processing |
 | Untrusted evidence or parser output | Worker compromise or misleading artifacts | Isolated, constrained workers; format validation; retained raw output and tool provenance |
 | AI-generated unsupported claims | Incorrect investigative conclusions | Grounded source references, explicit uncertainty, and mandatory examiner review |
@@ -78,4 +81,8 @@ Stop after each milestone for user review and approval before beginning the next
 
 ## Phase 1 status
 
-The initial API and dashboard scaffolds, configuration baseline, and focused health endpoint test are in place. The frontend build cannot be verified on the current machine because Node.js is unavailable, and Docker-based services have not been added. No forensic, authentication, persistence, or production feature is represented as complete.
+The initial API and dashboard scaffolds, configuration baseline, and focused health endpoint test are in place. The frontend build cannot be verified on the current machine because Node.js is unavailable, and Docker-based services have not been added. No forensic or production feature is represented as complete.
+
+## Phase 2 status
+
+The backend now defines organizations, users, external OIDC identities, memberships, and revocable server-side sessions. Authenticated API requests are scoped to active memberships; organization management enforces owner/admin roles and CSRF tokens. OIDC configuration remains external in development; staging and production settings require a database and OIDC configuration. Database migration, auth-session, and authorization tests run against SQLite. Live PostgreSQL and identity-provider behavior remain unverified. MFA is delegated to the identity provider and is not yet checked against provider-specific assurance claims, so production authentication is not yet ready for release.
