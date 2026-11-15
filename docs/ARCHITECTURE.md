@@ -35,7 +35,7 @@ These are target compatibility lines, not a resolved lockfile. Resolve and test 
 | Background processing (later milestone) | Celery 5.x |
 | Local AI and retrieval (later milestone) | Ollama, LlamaIndex, pgvector; validate model and extension versions against selected hardware and database |
 
-Phases 1 and 2 declare bounded dependency ranges in `backend/pyproject.toml` and `frontend/package.json`; no dependency lockfiles have been generated. Backend tests and migration compatibility have been checked with Python 3.15 and SQLite. PostgreSQL and an external identity provider are not configured in this environment, and there is no Node.js or Docker on `PATH`, so production database, live OIDC, and frontend compatibility remain unverified.
+Phases 1–3 declare bounded dependency ranges in `backend/pyproject.toml` and `frontend/package.json`; no dependency lockfiles have been generated. Backend tests and migration compatibility have been checked with Python 3.15 and SQLite. PostgreSQL and an external identity provider are not configured in this environment, and there is no Node.js or Docker on `PATH`, so production database, live OIDC, and frontend compatibility remain unverified.
 
 ## Deployment strategy
 
@@ -50,8 +50,8 @@ Cloud-specific architecture and pricing should be compared only after the system
 ## Milestones
 
 1. **Foundation (complete):** repository structure, API and dashboard skeleton, configuration, logging baseline, and tests.
-2. **Database and authentication (in progress):** PostgreSQL migrations, OIDC identity integration, organizations, memberships, role checks, and authorization tests. The initial implementation is OIDC-only; SAML remains future work.
-3. **Cases and evidence:** case management, evidence registration, acquisition metadata, hashing, and append-only custody events.
+2. **Database and authentication (complete):** PostgreSQL migrations, OIDC identity integration, organizations, memberships, role checks, and authorization tests. The initial implementation is OIDC-only; SAML remains future work.
+3. **Cases and evidence (implemented; production use blocked on storage design):** case management and assignments, evidence metadata and acquisition records, local read-only SHA-256 hashing, examiner-submitted hash comparisons, and append-only hash-linked custody events. Evidence binaries are not stored or uploaded.
 4. **Processing framework:** job lifecycle, isolated workers, adapter contracts, verified working copies, and recovery behavior.
 5. **Tool integrations:** implement and validate individual adapters with licensing and provenance checks.
 6. **Analysis modules:** add domain-specific analysis incrementally; mark each module by actual implementation and test status.
@@ -86,3 +86,9 @@ The initial API and dashboard scaffolds, configuration baseline, and focused hea
 ## Phase 2 status
 
 The backend now defines organizations, users, external OIDC identities, memberships, and revocable server-side sessions. Authenticated API requests are scoped to active memberships; organization management enforces owner/admin roles and CSRF tokens. OIDC configuration remains external in development; staging and production settings require a database and OIDC configuration. Database migration, auth-session, and authorization tests run against SQLite. Live PostgreSQL and identity-provider behavior remain unverified. MFA is delegated to the identity provider and is not yet checked against provider-specific assurance claims, so production authentication is not yet ready for release.
+
+## Phase 3 status
+
+Cases are scoped to organizations and assignments, while owner/admin case overrides are limited to organization members. Evidence registration stores metadata, acquisition details, and an examiner-reported initial SHA-256 digest; the local `digital-forensics-hash` utility hashes regular files in chunks and checks file identity, size, and modification time before and after reading. The API does not access the source file or validate that the submitted digest came from that utility. It records digest comparisons, not independent source verification.
+
+Custody events are append-only under ordinary database operations, linked by sequence and SHA-256 hashes, and verified by a read endpoint. Acquisition, hash-verification, and custody rows have SQLite and PostgreSQL mutation-blocking triggers. These controls do not protect against privileged database operators who can alter data or disable triggers. Evidence binaries, encrypted storage, key management, live PostgreSQL behavior, and production readiness remain out of scope; Phase 4 must not begin until the user approves the next milestone.

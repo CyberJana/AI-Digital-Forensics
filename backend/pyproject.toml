@@ -32,3 +32,4 @@ testpaths = ["tests"]
 
 [project.scripts]
 digital-forensics-bootstrap = "digital_forensics.bootstrap:main"
+digital-forensics-hash = "digital_forensics.hashing:main"

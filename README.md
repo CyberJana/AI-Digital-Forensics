@@ -1,6 +1,6 @@
 # AI Digital Forensics
 
-Foundation for a hybrid local-lab and cloud digital forensics investigation platform. The project is being implemented in controlled milestones; Phase 2 adds the PostgreSQL data model and OIDC-backed identity and organization access controls.
+Foundation for a hybrid local-lab and cloud digital forensics investigation platform. The project is being implemented in controlled milestones; Phases 1–3 provide the API foundation, OIDC-backed identity and organization access controls, and case/evidence metadata with local hashing and custody-chain records.
 
 ## Repository layout
 
@@ -53,6 +53,20 @@ Users are provisioned from validated OIDC subject claims; only verified email cl
 
 The API currently exposes `/auth/login`, `/auth/callback`, `/auth/me`, `/auth/csrf`, `/auth/logout`, `/organizations`, and organization member list/add/update/remove routes. The frontend is not yet wired to these endpoints. Keep the frontend and API on the same site so the `SameSite=Lax` session cookies are sent; CORS is restricted to the configured frontend origin.
 
+### Cases and evidence metadata
+
+Phase 3 adds organization-scoped cases, case assignments, evidence metadata, acquisition records, examiner-submitted SHA-256 comparisons, and hash-linked custody events. Case access requires organization membership and, except for organization owners/admins, an explicit case assignment. Only case owners/examiners and organization owners/admins can register evidence or append verification/custody records; closed cases are read-only until reopened by a case owner or organization owner/admin.
+
+The API provides case create/list/get/update and assignment routes under `/organizations/{organization_id}/cases` and `/cases/{case_id}`, plus evidence registration/list/get, acquisition listing, hash-verification, and custody-event list/append/verification routes under `/cases/{case_id}/evidence` and `/evidence/{evidence_id}`.
+
+The local utility reads regular files without modifying them and prints JSON with a SHA-256 digest and byte count:
+
+```powershell
+digital-forensics-hash "C:\evidence\image.E01"
+```
+
+Evidence registration accepts metadata and a digest; the API does not receive or independently hash the source file. Evidence binaries are not stored. Hash comparisons therefore record the examiner-submitted digest and must not be interpreted as independent server verification. Acquisition, hash-verification, and custody rows are protected from ordinary updates/deletes by SQLite/PostgreSQL triggers, and custody events are linked by a verifiable hash chain; privileged database access can still bypass database controls.
+
 ### Frontend
 
 Requires Node.js 20.9 or newer and npm.
@@ -67,4 +81,4 @@ The dashboard is available at `http://localhost:3000`. The UI is currently a fou
 
 ## Scope and limitations
 
-Evidence processing, case management, SAML integration, frontend sign-in, invitations, and deployment are not implemented yet. OIDC requires a configured identity provider and PostgreSQL database. MFA depends on identity-provider policy and must be verified before production use. Do not use this foundation with real evidence or for production investigations. See the architecture and roadmap in `docs/ARCHITECTURE.md`.
+Encrypted evidence storage, evidence processing, SAML integration, frontend sign-in, invitations, and deployment are not implemented yet. OIDC requires a configured identity provider and PostgreSQL database. MFA depends on identity-provider policy and must be verified before production use. Do not use this foundation with real evidence or for production investigations. See the architecture and roadmap in `docs/ARCHITECTURE.md`.

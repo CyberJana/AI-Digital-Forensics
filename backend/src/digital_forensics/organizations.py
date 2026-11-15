@@ -8,7 +8,14 @@ from sqlalchemy.orm import Session
 
 from digital_forensics.database import get_db_session
 from digital_forensics.identity import AuthenticatedUser, get_authenticated_user, require_csrf
-from digital_forensics.models import Membership, MembershipRole, Organization, User
+from digital_forensics.models import (
+    CaseAssignment,
+    InvestigationCase,
+    Membership,
+    MembershipRole,
+    Organization,
+    User,
+)
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
 DatabaseSession = Annotated[Session, Depends(get_db_session)]
@@ -147,6 +154,20 @@ def remove_member(
     target = _require_existing_membership(db, organization_id, user_id)
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    assigned_case_count = db.scalar(
+        select(func.count())
+        .select_from(CaseAssignment)
+        .join(InvestigationCase, InvestigationCase.id == CaseAssignment.case_id)
+        .where(
+            InvestigationCase.organization_id == organization_id,
+            CaseAssignment.user_id == user_id,
+        )
+    )
+    if assigned_case_count:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Remove the user's case assignments before removing organization membership",
+        )
     if target.role == MembershipRole.OWNER:
         _lock_organization(db, organization_id)
         owner_count = db.scalar(
