@@ -11,6 +11,7 @@ from digital_forensics.auth import router as auth_router
 from digital_forensics.cases import router as cases_router
 from digital_forensics.database import create_database_engine, create_session_factory
 from digital_forensics.evidence import router as evidence_router
+from digital_forensics.jobs import router as processing_router
 from digital_forensics.organizations import router as organizations_router
 from digital_forensics.settings import Settings, get_settings
 
@@ -66,6 +67,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(organizations_router)
     application.include_router(cases_router)
     application.include_router(evidence_router)
+    application.include_router(processing_router)
 
     @application.get("/health", tags=["health"])
     async def health() -> dict[str, str]:
