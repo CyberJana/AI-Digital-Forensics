@@ -1,6 +1,6 @@
 # AI Digital Forensics
 
-Foundation for a hybrid local-lab and cloud digital forensics investigation platform. The project is being implemented in controlled milestones; Phases 1–4 provide the API foundation, OIDC-backed identity and organization access controls, case/evidence metadata, and an initial processing framework.
+Foundation for a hybrid local-lab and cloud digital forensics investigation platform. The project is being implemented in controlled milestones; Phases 1–4 provide the API foundation, OIDC-backed identity and organization access controls, case/evidence metadata, and an initial processing framework. Phase 5 begins an ExifTool metadata adapter, but execution remains disabled until OS-level sandboxing is approved.
 
 ## Repository layout
 
@@ -79,6 +79,10 @@ digital-forensics-copy "C:\evidence\image.E01" "C:\case-work\image-copy.E01"
 
 The destination directory must exist, and the destination file must not already exist. The utility reports the local working-copy path and its SHA-256 digest; file paths are not accepted by the processing API or stored in job records. The worker runs in a separate process from the API, but this is not an OS-level sandbox. Do not run parsers on real evidence until worker resource isolation, encrypted storage, and key management are designed and validated.
 
+The Phase 5 ExifTool adapter records the tool version, upstream license/source references, extracted metadata, and working-copy digest. It is disabled by default, and the API refuses ExifTool jobs; the worker also fails closed if such a job is inserted directly. The metadata collector requires an explicit sandbox runner and fails closed without one; no sandbox runner is implemented, and the ExifTool executable is not bundled or invoked. The upstream README describes ExifTool as redistributable under either the Perl Artistic License or GPL; review the applicable terms before any distribution. The worker process boundary is not a sandbox, and execution must remain disabled until OS-level isolation is approved and validated.
+
+The worker's future local-copy lookup is configured with `DIGITAL_FORENSICS_WORKING_COPY_ROOT`; copies are expected as direct-child files named `<evidence-id>.working-copy` and are checked against the registered SHA-256 digest. `DIGITAL_FORENSICS_EXIFTOOL_EXECUTABLE` selects the executable when execution is eventually approved. These settings do not enable ExifTool.
+
 ### Frontend
 
 Requires Node.js 20.9 or newer and npm.
@@ -93,4 +97,4 @@ The dashboard is available at `http://localhost:3000`. The UI is currently a fou
 
 ## Scope and limitations
 
-Encrypted evidence storage, forensic tool integrations, SAML integration, frontend sign-in, invitations, and deployment are not implemented yet. OIDC requires a configured identity provider and PostgreSQL database. MFA depends on identity-provider policy and must be verified before production use. Do not use this foundation with real evidence or for production investigations. See the architecture and roadmap in `docs/ARCHITECTURE.md`.
+Encrypted evidence storage, executable forensic tool integrations, SAML integration, frontend sign-in, invitations, and deployment are not implemented yet. OIDC requires a configured identity provider and PostgreSQL database. MFA depends on identity-provider policy and must be verified before production use. Do not use this foundation with real evidence or for production investigations. See the architecture and roadmap in `docs/ARCHITECTURE.md`.

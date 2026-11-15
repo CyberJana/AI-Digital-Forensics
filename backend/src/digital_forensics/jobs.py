@@ -88,6 +88,11 @@ def create_processing_job(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Unknown adapter",
         )
+    if not adapter.enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Adapter execution is disabled until sandboxing is approved",
+        )
     if adapter.name == "custody-chain-verification" and payload.parameters:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

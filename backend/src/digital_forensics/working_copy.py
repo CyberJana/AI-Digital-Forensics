@@ -5,6 +5,7 @@ import os
 import stat
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from uuid import UUID
 
 from digital_forensics.hashing import CHUNK_SIZE, hash_file_read_only
 
@@ -62,6 +63,24 @@ def create_verified_working_copy(source: Path, destination: Path) -> VerifiedWor
     finally:
         if created_destination and not complete:
             destination.unlink(missing_ok=True)
+
+
+def resolve_verified_working_copy(
+    root: Path,
+    evidence_id: UUID,
+    expected_sha256: str,
+) -> Path:
+    resolved_root = root.resolve(strict=True)
+    if not resolved_root.is_dir():
+        raise ValueError("The working-copy root must be a directory")
+    candidate = resolved_root / f"{evidence_id}.working-copy"
+    candidate_info = candidate.lstat()
+    if not stat.S_ISREG(candidate_info.st_mode):
+        raise ValueError("The working copy must be a regular, non-symlink file")
+    copied = hash_file_read_only(candidate)
+    if copied.sha256 != expected_sha256:
+        raise ValueError("The working copy does not match the registered evidence digest")
+    return candidate
 
 
 def _signature(file_stat: os.stat_result) -> tuple[int, int, int, int]:
