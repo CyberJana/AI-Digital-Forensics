@@ -62,7 +62,6 @@ export default function EvidenceStoragePanel({
   const [acquiredAt, setAcquiredAt] = useState(localDateTimeValue);
 
   const reload = useCallback(async (signal?: AbortSignal) => {
-    setError("");
     try {
       const response = await fetch(`${API_BASE_URL}/cases/${caseId}/evidence`, {
         credentials: "include",
@@ -70,7 +69,10 @@ export default function EvidenceStoragePanel({
       });
       if (!response.ok) throw new Error(await errorDetail(response));
       const records = (await response.json()) as EvidenceRecord[];
-      if (!signal?.aborted) setEvidence(records);
+      if (!signal?.aborted) {
+        setEvidence(records);
+        setError("");
+      }
     } catch (caught) {
       if (!signal?.aborted) {
         setError(caught instanceof Error ? caught.message : "Could not load evidence.");
@@ -82,9 +84,10 @@ export default function EvidenceStoragePanel({
 
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true);
-    setEvidence([]);
-    void reload(controller.signal);
+    async function load() {
+      await reload(controller.signal);
+    }
+    void load();
     return () => controller.abort();
   }, [reload]);
 

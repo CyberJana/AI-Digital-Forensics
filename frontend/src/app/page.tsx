@@ -31,6 +31,14 @@ interface CaseRecord {
   created_at: string;
 }
 
+const EMPTY_CASES: CaseRecord[] = [];
+
+interface CaseListState {
+  organizationId: string;
+  cases: CaseRecord[];
+  selectedCaseId: string;
+}
+
 interface TimelineEvent {
   source_type: "acquisition" | "custody";
   source_record_id: string;
@@ -60,6 +68,16 @@ interface CaseTimeline {
   case_id: string;
   events: TimelineEvent[];
   custody_verification: CustodyVerification[];
+}
+
+interface CaseOverviewState {
+  caseId: string;
+  identityId: string | null;
+  timeline: CaseTimeline | null;
+  summaries: AISummary[];
+  caseRole: string | null;
+  caseError: string;
+  summaryError: string;
 }
 
 interface SummaryKeyPoint {
@@ -171,16 +189,38 @@ export default function Home() {
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [csrfToken, setCsrfToken] = useState("");
   const [selectedOrganizationId, setSelectedOrganizationId] = useState("");
-  const [cases, setCases] = useState<CaseRecord[]>([]);
-  const [selectedCaseId, setSelectedCaseId] = useState("");
-  const [timeline, setTimeline] = useState<CaseTimeline | null>(null);
-  const [summaries, setSummaries] = useState<AISummary[]>([]);
-  const [caseRole, setCaseRole] = useState<string | null>(null);
-  const [loadingCases, setLoadingCases] = useState(false);
-  const [loadingCase, setLoadingCase] = useState(false);
+  const [caseList, setCaseList] = useState<CaseListState>({
+    organizationId: "",
+    cases: [],
+    selectedCaseId: "",
+  });
+  const currentCaseList =
+    caseList.organizationId === selectedOrganizationId ? caseList : null;
+  const cases = currentCaseList?.cases ?? EMPTY_CASES;
+  const selectedCaseId = currentCaseList?.selectedCaseId ?? "";
+  const loadingCases = Boolean(selectedOrganizationId) && !currentCaseList;
+  const [caseOverview, setCaseOverview] = useState<CaseOverviewState>({
+    caseId: "",
+    identityId: null,
+    timeline: null,
+    summaries: [],
+    caseRole: null,
+    caseError: "",
+    summaryError: "",
+  });
+  const isCurrentCaseOverview =
+    caseOverview.caseId === selectedCaseId &&
+    caseOverview.identityId === (identity?.id ?? null);
+  const currentCaseOverview = isCurrentCaseOverview ? caseOverview : null;
+  const {
+    timeline = null,
+    summaries = [],
+    caseRole = null,
+    caseError = "",
+    summaryError = "",
+  } = currentCaseOverview ?? {};
+  const loadingCase = Boolean(selectedCaseId) && !isCurrentCaseOverview;
   const [pageError, setPageError] = useState("");
-  const [caseError, setCaseError] = useState("");
-  const [summaryError, setSummaryError] = useState("");
 
   const selectedCase = useMemo(
     () => cases.find((item) => item.id === selectedCaseId) ?? null,
@@ -221,6 +261,7 @@ export default function Home() {
         setIdentity(profile);
         setCsrfToken(csrf.csrf_token);
         setSelectedOrganizationId(profile.organizations[0]?.id ?? "");
+        setPageError("");
         setAuthState("ready");
       } catch (error) {
         if (!active || controller.signal.aborted) return;
@@ -241,19 +282,10 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!selectedOrganizationId) {
-      setCases([]);
-      setSelectedCaseId("");
-      setLoadingCases(false);
-      return;
-    }
+    if (!selectedOrganizationId) return;
 
     const controller = new AbortController();
     let active = true;
-    setLoadingCases(true);
-    setPageError("");
-    setCases([]);
-    setSelectedCaseId("");
 
     async function loadCases() {
       try {
@@ -262,13 +294,19 @@ export default function Home() {
           { signal: controller.signal },
         );
         if (!active) return;
-        setCases(result);
-        setSelectedCaseId(result[0]?.id ?? "");
+        setCaseList({
+          organizationId: selectedOrganizationId,
+          cases: result,
+          selectedCaseId: result[0]?.id ?? "",
+        });
       } catch (error) {
         if (!active || controller.signal.aborted) return;
         setPageError(errorMessage(error));
-      } finally {
-        if (active) setLoadingCases(false);
+        setCaseList({
+          organizationId: selectedOrganizationId,
+          cases: [],
+          selectedCaseId: "",
+        });
       }
     }
 
@@ -280,24 +318,10 @@ export default function Home() {
   }, [selectedOrganizationId]);
 
   useEffect(() => {
-    if (!selectedCaseId) {
-      setTimeline(null);
-      setSummaries([]);
-      setCaseError("");
-      setSummaryError("");
-      setLoadingCase(false);
-      setCaseRole(null);
-      return;
-    }
+    if (!selectedCaseId) return;
 
     const controller = new AbortController();
     let active = true;
-    setTimeline(null);
-    setSummaries([]);
-    setCaseError("");
-    setSummaryError("");
-    setLoadingCase(true);
-    setCaseRole(null);
 
     async function loadCaseOverview() {
       const [timelineResult, summariesResult, membersResult] = await Promise.allSettled([
@@ -315,23 +339,27 @@ export default function Home() {
         ),
       ]);
       if (!active) return;
-      if (timelineResult.status === "fulfilled") {
-        setTimeline(timelineResult.value);
-      } else if (!controller.signal.aborted) {
-        setCaseError(errorMessage(timelineResult.reason));
-      }
-      if (summariesResult.status === "fulfilled") {
-        setSummaries(summariesResult.value);
-      } else if (!controller.signal.aborted) {
-        setSummaryError(errorMessage(summariesResult.reason));
-      }
-      if (membersResult.status === "fulfilled" && identity) {
-        setCaseRole(
-          membersResult.value.find((member) => member.user_id === identity.id)?.role ??
-            null,
-        );
-      }
-      setLoadingCase(false);
+      setCaseOverview({
+        caseId: selectedCaseId,
+        identityId: identity?.id ?? null,
+        timeline:
+          timelineResult.status === "fulfilled" ? timelineResult.value : null,
+        summaries:
+          summariesResult.status === "fulfilled" ? summariesResult.value : [],
+        caseRole:
+          membersResult.status === "fulfilled" && identity
+            ? membersResult.value.find((member) => member.user_id === identity.id)
+                ?.role ?? null
+            : null,
+        caseError:
+          timelineResult.status === "rejected"
+            ? errorMessage(timelineResult.reason)
+            : "",
+        summaryError:
+          summariesResult.status === "rejected"
+            ? errorMessage(summariesResult.reason)
+            : "",
+      });
     }
 
     void loadCaseOverview();
@@ -399,7 +427,10 @@ export default function Home() {
             className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 disabled:opacity-50"
             disabled={authState !== "ready" || !identity?.organizations.length}
             value={selectedOrganizationId}
-            onChange={(event) => setSelectedOrganizationId(event.target.value)}
+            onChange={(event) => {
+              setPageError("");
+              setSelectedOrganizationId(event.target.value);
+            }}
           >
             {identity?.organizations.map((organization) => (
               <option key={organization.id} value={organization.id}>
@@ -508,7 +539,12 @@ export default function Home() {
                         className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-base font-medium text-white disabled:opacity-50"
                         disabled={loadingCases || cases.length === 0}
                         value={selectedCaseId}
-                        onChange={(event) => setSelectedCaseId(event.target.value)}
+                        onChange={(event) =>
+                          setCaseList((current) => ({
+                            ...current,
+                            selectedCaseId: event.target.value,
+                          }))
+                        }
                       >
                         {cases.length === 0 ? (
                           <option value="">
@@ -585,6 +621,7 @@ export default function Home() {
                       </section>
 
                       <EvidenceStoragePanel
+                        key={selectedCase.id}
                         canWrite={canWriteCase}
                         caseId={selectedCase.id}
                         caseStatus={selectedCase.status}
@@ -793,7 +830,7 @@ export default function Home() {
                         </section>
                       </div>
                       <ReportingPanel
-                        key={selectedCase.id}
+                        key={`${selectedCase.id}:${csrfToken}`}
                         canReview={canReviewCase}
                         canWrite={canWriteCase}
                         caseId={selectedCase.id}

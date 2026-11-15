@@ -149,13 +149,13 @@ export default function ReportingPanel({
   const [searched, setSearched] = useState(false);
 
   const reload = useCallback(async (signal?: AbortSignal) => {
-    setLoadError("");
     const [findingResult, reportResult, auditResult] = await Promise.allSettled([
       requestJson<Finding[]>(`/cases/${caseId}/findings`, csrfToken, { signal }),
       requestJson<Report[]>(`/cases/${caseId}/reports`, csrfToken, { signal }),
       requestJson<AuditEvent[]>(`/cases/${caseId}/audit-log`, csrfToken, { signal }),
     ]);
     if (signal?.aborted) return;
+    setLoadError("");
     const failures: string[] = [];
     if (findingResult.status === "fulfilled") setFindings(findingResult.value);
     else failures.push("findings");
@@ -169,16 +169,10 @@ export default function ReportingPanel({
 
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true);
-    setFindings([]);
-    setReports([]);
-    setAuditEvents([]);
-    setSelectedSources([]);
-    setSelectedFindings([]);
-    setSearchHits([]);
-    setSearched(false);
-    setQuery("");
-    void reload(controller.signal);
+    async function load() {
+      await reload(controller.signal);
+    }
+    void load();
     return () => controller.abort();
   }, [caseId, csrfToken, reload]);
 
