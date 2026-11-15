@@ -4,9 +4,12 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum as SqlEnum,
     ForeignKey,
+    Integer,
+    JSON,
     String,
     UniqueConstraint,
     Uuid,
@@ -24,6 +27,18 @@ class MembershipRole(str, Enum):
     EXAMINER = "examiner"
     REVIEWER = "reviewer"
     VIEWER = "viewer"
+
+
+class CaseRole(str, Enum):
+    OWNER = "owner"
+    EXAMINER = "examiner"
+    REVIEWER = "reviewer"
+    VIEWER = "viewer"
+
+
+class CaseStatus(str, Enum):
+    OPEN = "open"
+    CLOSED = "closed"
 
 
 def utc_now() -> datetime:
@@ -138,3 +153,188 @@ class AuthSession(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     user: Mapped[User] = relationship(back_populates="sessions")
+
+
+class InvestigationCase(Base):
+    __tablename__ = "cases"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "case_number", name="uq_case_org_number"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    case_number: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(4000))
+    status: Mapped[CaseStatus] = mapped_column(
+        SqlEnum(
+            CaseStatus,
+            name="case_status",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=CaseStatus.OPEN,
+    )
+    created_by: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    assignments: Mapped[list["CaseAssignment"]] = relationship(
+        back_populates="case", cascade="all, delete-orphan"
+    )
+    evidence: Mapped[list["EvidenceItem"]] = relationship(
+        back_populates="case", cascade="all, delete-orphan"
+    )
+
+
+class CaseAssignment(Base):
+    __tablename__ = "case_assignments"
+    __table_args__ = (
+        UniqueConstraint("case_id", "user_id", name="uq_case_assignment_case_user"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    case_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    role: Mapped[CaseRole] = mapped_column(
+        SqlEnum(
+            CaseRole,
+            name="case_role",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+    case: Mapped[InvestigationCase] = relationship(back_populates="assignments")
+    user: Mapped[User] = relationship()
+
+
+class EvidenceItem(Base):
+    __tablename__ = "evidence_items"
+    __table_args__ = (
+        UniqueConstraint("case_id", "evidence_number", name="uq_evidence_case_number"),
+        CheckConstraint("size_bytes >= 0", name="ck_evidence_size_nonnegative"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    case_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    evidence_number: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(4000))
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    media_type: Mapped[str | None] = mapped_column(String(255))
+    original_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    registered_by: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+    case: Mapped[InvestigationCase] = relationship(back_populates="evidence")
+    acquisitions: Mapped[list["AcquisitionRecord"]] = relationship(back_populates="evidence")
+    hash_verifications: Mapped[list["HashVerification"]] = relationship(back_populates="evidence")
+    custody_events: Mapped[list["CustodyEvent"]] = relationship(back_populates="evidence")
+
+
+class AcquisitionRecord(Base):
+    __tablename__ = "acquisition_records"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    evidence_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("evidence_items.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    acquired_by: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    acquisition_method: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_description: Mapped[str] = mapped_column(String(1000), nullable=False)
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+    evidence: Mapped[EvidenceItem] = relationship(back_populates="acquisitions")
+    examiner: Mapped[User] = relationship()
+
+
+class HashVerification(Base):
+    __tablename__ = "hash_verifications"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    evidence_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("evidence_items.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    checked_by: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    submitted_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    matched: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+    evidence: Mapped[EvidenceItem] = relationship(back_populates="hash_verifications")
+    examiner: Mapped[User] = relationship()
+
+
+class CustodyEvent(Base):
+    __tablename__ = "custody_events"
+    __table_args__ = (
+        UniqueConstraint("evidence_id", "sequence", name="uq_custody_event_evidence_sequence"),
+        CheckConstraint("sequence > 0", name="ck_custody_sequence_positive"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    evidence_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("evidence_items.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    notes: Mapped[str | None] = mapped_column(String(2000))
+    details: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    previous_hash: Mapped[str | None] = mapped_column(String(64))
+    event_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+    evidence: Mapped[EvidenceItem] = relationship(back_populates="custody_events")
+    actor: Mapped[User] = relationship()
