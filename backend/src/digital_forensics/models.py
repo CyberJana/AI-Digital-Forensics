@@ -12,6 +12,7 @@ from sqlalchemy import (
     Integer,
     JSON,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
 )
@@ -245,7 +246,15 @@ class EvidenceItem(Base):
     __tablename__ = "evidence_items"
     __table_args__ = (
         UniqueConstraint("case_id", "evidence_number", name="uq_evidence_case_number"),
+        UniqueConstraint("storage_object_key", name="uq_evidence_storage_object_key"),
         CheckConstraint("size_bytes >= 0", name="ck_evidence_size_nonnegative"),
+        CheckConstraint(
+            "(storage_object_key IS NULL AND encrypted_data_key IS NULL "
+            "AND encryption_nonce IS NULL AND encryption_tag IS NULL) OR "
+            "(storage_object_key IS NOT NULL AND encrypted_data_key IS NOT NULL "
+            "AND encryption_nonce IS NOT NULL AND encryption_tag IS NOT NULL)",
+            name="ck_evidence_storage_encryption_metadata",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -258,6 +267,11 @@ class EvidenceItem(Base):
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     media_type: Mapped[str | None] = mapped_column(String(255))
     original_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    storage_object_key: Mapped[str | None] = mapped_column(String(1024))
+    storage_version_id: Mapped[str | None] = mapped_column(String(1024))
+    encrypted_data_key: Mapped[str | None] = mapped_column(Text)
+    encryption_nonce: Mapped[str | None] = mapped_column(String(32))
+    encryption_tag: Mapped[str | None] = mapped_column(String(32))
     registered_by: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
@@ -401,3 +415,157 @@ class ProcessingJob(Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CaseAISummary(Base):
+    __tablename__ = "case_ai_summaries"
+    __table_args__ = (
+        CheckConstraint(
+            "review_status = 'unreviewed'",
+            name="ck_case_ai_summary_unreviewed",
+        ),
+        Index("ix_case_ai_summaries_case_created_at", "case_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    case_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("cases.id", ondelete="RESTRICT"), nullable=False
+    )
+    requested_by: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    summary_source_record_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    key_points: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False)
+    source_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    review_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unreviewed"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class CaseFinding(Base):
+    __tablename__ = "case_findings"
+    __table_args__ = (
+        Index("ix_case_findings_case_created_at", "case_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    case_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("cases.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_by: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    narrative: Mapped[str] = mapped_column(Text, nullable=False)
+    source_record_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    source_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class FindingReviewDecision(Base):
+    __tablename__ = "finding_review_decisions"
+    __table_args__ = (
+        CheckConstraint(
+            "decision IN ('approved', 'rejected')",
+            name="ck_finding_review_decision",
+        ),
+        Index(
+            "ix_finding_review_decisions_finding_created_at",
+            "finding_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    finding_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("case_findings.id", ondelete="RESTRICT"), nullable=False
+    )
+    reviewer_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    notes: Mapped[str | None] = mapped_column(String(2000))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class CaseReport(Base):
+    __tablename__ = "case_reports"
+    __table_args__ = (
+        Index("ix_case_reports_case_created_at", "case_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    case_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("cases.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_by: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    finding_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    source_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReportReviewDecision(Base):
+    __tablename__ = "report_review_decisions"
+    __table_args__ = (
+        CheckConstraint(
+            "decision IN ('approved', 'rejected')",
+            name="ck_report_review_decision",
+        ),
+        Index(
+            "ix_report_review_decisions_report_created_at",
+            "report_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    report_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("case_reports.id", ondelete="RESTRICT"), nullable=False
+    )
+    reviewer_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    notes: Mapped[str | None] = mapped_column(String(2000))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        Index("ix_audit_events_case_occurred_at", "case_id", "occurred_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    case_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("cases.id", ondelete="RESTRICT"), nullable=False
+    )
+    actor_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    action: Mapped[str] = mapped_column(String(100), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    metadata_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )

@@ -22,6 +22,9 @@ def test_migrations_match_models_and_forensic_records_are_append_only(
 
         evidence_id = str(uuid4())
         actor_id = str(uuid4())
+        case_id = str(uuid4())
+        finding_id = str(uuid4())
+        report_id = str(uuid4())
         timestamp = "2026-01-01T00:00:00+00:00"
         inserts = {
             "acquisition_records": (
@@ -50,6 +53,83 @@ def test_migrations_match_models_and_forensic_records_are_append_only(
                     "{}",
                     None,
                     "b" * 64,
+                    timestamp,
+                ),
+            ),
+            "case_ai_summaries": (
+                "INSERT INTO case_ai_summaries "
+                "(id, case_id, requested_by, provider, model_name, prompt_version, "
+                "summary, summary_source_record_ids, key_points, source_snapshot, "
+                "review_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(uuid4()),
+                    case_id,
+                    actor_id,
+                    "ollama",
+                    "test-model",
+                    "case-summary-v1",
+                    "Synthetic summary",
+                    '["source-id"]',
+                    "[]",
+                    "{}",
+                    "unreviewed",
+                    timestamp,
+                ),
+            ),
+            "case_findings": (
+                "INSERT INTO case_findings "
+                "(id, case_id, created_by, title, narrative, source_record_ids, "
+                "source_snapshot, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    finding_id,
+                    case_id,
+                    actor_id,
+                    "Test finding",
+                    "Synthetic finding",
+                    '["source-id"]',
+                    '{"sources":[]}',
+                    timestamp,
+                ),
+            ),
+            "finding_review_decisions": (
+                "INSERT INTO finding_review_decisions "
+                "(id, finding_id, reviewer_id, decision, notes, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (str(uuid4()), finding_id, actor_id, "approved", None, timestamp),
+            ),
+            "case_reports": (
+                "INSERT INTO case_reports "
+                "(id, case_id, created_by, title, body, finding_ids, source_snapshot, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    report_id,
+                    case_id,
+                    actor_id,
+                    "Test report",
+                    "Synthetic report",
+                    f'["{finding_id}"]',
+                    "{}",
+                    timestamp,
+                ),
+            ),
+            "report_review_decisions": (
+                "INSERT INTO report_review_decisions "
+                "(id, report_id, reviewer_id, decision, notes, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (str(uuid4()), report_id, actor_id, "approved", None, timestamp),
+            ),
+            "audit_events": (
+                "INSERT INTO audit_events "
+                "(id, case_id, actor_id, action, target_type, target_id, metadata_json, "
+                "occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(uuid4()),
+                    case_id,
+                    actor_id,
+                    "finding.created",
+                    "finding",
+                    finding_id,
+                    "{}",
                     timestamp,
                 ),
             ),

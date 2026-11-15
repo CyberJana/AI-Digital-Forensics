@@ -20,7 +20,7 @@ from digital_forensics.models import (
 )
 from digital_forensics.hashing import hash_file_read_only
 
-from support import authenticate, create_test_identity
+from support import authenticate, create_test_identity, create_test_user
 
 
 def _headers(identity: dict[str, object]) -> dict[str, str]:
@@ -105,6 +105,91 @@ async def test_evidence_hash_verification_and_custody_chain(
 
     tampered = await client.get(f"/evidence/{evidence_id}/custody-events/verification")
     assert tampered.json()["valid"] is False
+    timeline = await client.get(f"/cases/{case_id}/timeline")
+    assert timeline.json()["custody_verification"][0]["valid"] is False
+
+
+@pytest.mark.anyio
+async def test_case_timeline_merges_acquisition_and_custody_records(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    identity = create_test_identity(app)
+    authenticate(client, identity)
+    case_id = await _create_case(client, identity)
+    acquired_at = datetime.now(UTC) - timedelta(days=2)
+    evidence_response = await client.post(
+        f"/cases/{case_id}/evidence",
+        json={
+            "evidence_number": "TIMELINE-E1",
+            "name": "Timeline evidence",
+            "size_bytes": 4,
+            "original_sha256": "a" * 64,
+            "acquisition_method": "write blocker",
+            "source_description": "Synthetic test source",
+            "acquired_at": acquired_at.isoformat(),
+        },
+        headers=_headers(identity),
+    )
+    assert evidence_response.status_code == 201
+    evidence_id = evidence_response.json()["id"]
+    custody_response = await client.post(
+        f"/evidence/{evidence_id}/custody-events",
+        json={"event_type": "transferred", "notes": "Moved to examiner"},
+        headers=_headers(identity),
+    )
+    assert custody_response.status_code == 201
+
+    timeline = await client.get(f"/cases/{case_id}/timeline")
+
+    assert timeline.status_code == 200
+    result = timeline.json()
+    assert result["case_id"] == case_id
+    events = result["events"]
+    assert [event["source_type"] for event in events] == [
+        "acquisition",
+        "custody",
+        "custody",
+    ]
+    assert [event["event_type"] for event in events] == [
+        "acquisition",
+        "registered",
+        "transferred",
+    ]
+    assert events[0]["evidence_id"] == evidence_id
+    assert events[0]["details"] == {
+        "acquisition_method": "write blocker",
+        "source_description": "Synthetic test source",
+    }
+    assert datetime.fromisoformat(events[0]["occurred_at"]) == acquired_at
+    assert result["custody_verification"] == [
+        {
+            "evidence_id": evidence_id,
+            "valid": True,
+            "event_count": 2,
+            "head_hash": custody_response.json()["event_hash"],
+        }
+    ]
+
+    outsider_token = "timeline-outsider-session"
+    outsider_csrf = "timeline-outsider-csrf"
+    with app.state.session_factory() as db:
+        outsider_id = create_test_user(db)
+        db.add(
+            AuthSession(
+                user_id=outsider_id,
+                token_digest=digest_token(outsider_token),
+                csrf_digest=digest_token(outsider_csrf),
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+        )
+        db.commit()
+    authenticate(
+        client,
+        {"raw_session_token": outsider_token, "csrf_token": outsider_csrf},
+    )
+    unauthorized_timeline = await client.get(f"/cases/{case_id}/timeline")
+    assert unauthorized_timeline.status_code == 404
 
 
 @pytest.mark.anyio
