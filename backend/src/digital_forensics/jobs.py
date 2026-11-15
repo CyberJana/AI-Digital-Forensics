@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from digital_forensics.audit import record_case_audit
 from digital_forensics.case_access import get_case_access, require_case_roles
 from digital_forensics.database import get_db_session
 from digital_forensics.identity import AuthenticatedUser, get_authenticated_user, require_csrf
@@ -109,6 +110,16 @@ def create_processing_job(
         parameters=payload.parameters,
     )
     db.add(job)
+    db.flush()
+    record_case_audit(
+        db,
+        case_id=case_id,
+        actor_id=current.user.id,
+        action="processing_job.created",
+        target_type="processing_job",
+        target_id=job.id,
+        metadata={"adapter_name": job.adapter_name, "status": job.status.value},
+    )
     db.commit()
     db.refresh(job)
     return _job_response(job)
@@ -172,6 +183,14 @@ def cancel_processing_job(
             status_code=status.HTTP_409_CONFLICT,
             detail="Only queued processing jobs can be cancelled",
         )
+    record_case_audit(
+        db,
+        case_id=job.case_id,
+        actor_id=current.user.id,
+        action="processing_job.cancelled",
+        target_type="processing_job",
+        target_id=job.id,
+    )
     db.commit()
     db.refresh(job)
     return _job_response(job)

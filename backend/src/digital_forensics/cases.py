@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from digital_forensics.audit import record_case_audit
 from digital_forensics.case_access import CaseAccess, get_case_access, require_case_roles
 from digital_forensics.database import get_db_session
 from digital_forensics.identity import AuthenticatedUser, get_authenticated_user, require_csrf
@@ -150,6 +151,15 @@ def create_case(
             role=CaseRole.OWNER,
         )
     )
+    db.flush()
+    record_case_audit(
+        db,
+        case_id=investigation_case.id,
+        actor_id=current.user.id,
+        action="case.created",
+        target_type="case",
+        target_id=investigation_case.id,
+    )
     db.commit()
     db.refresh(investigation_case)
     return _case_response(investigation_case)
@@ -231,6 +241,15 @@ def update_case(
         access.case.status = updates["status"]
         access.case.closed_at = utc_now() if updates["status"] == CaseStatus.CLOSED else None
     access.case.updated_at = utc_now()
+    record_case_audit(
+        db,
+        case_id=case_id,
+        actor_id=current.user.id,
+        action="case.updated",
+        target_type="case",
+        target_id=case_id,
+        metadata={"fields": sorted(updates)},
+    )
     db.commit()
     db.refresh(access.case)
     return _case_response(access.case)
@@ -290,6 +309,15 @@ def add_case_member(
         role=CaseRole(payload.role),
     )
     db.add(assignment)
+    record_case_audit(
+        db,
+        case_id=case_id,
+        actor_id=current.user.id,
+        action="case_member.added",
+        target_type="case_assignment",
+        target_id=user.id,
+        metadata={"role": assignment.role.value},
+    )
     db.commit()
     db.refresh(assignment)
     return _member_response(assignment, user)
@@ -326,7 +354,17 @@ def update_case_member(
                 detail="A case must retain at least one owner",
             )
 
+    previous_role = assignment.role.value
     assignment.role = payload.role
+    record_case_audit(
+        db,
+        case_id=case_id,
+        actor_id=current.user.id,
+        action="case_member.role_updated",
+        target_type="case_assignment",
+        target_id=user_id,
+        metadata={"previous_role": previous_role, "role": payload.role.value},
+    )
     db.commit()
     db.refresh(assignment)
     return _member_response(assignment, assignment.user)
@@ -365,7 +403,17 @@ def remove_case_member(
                 detail="A case must retain at least one owner",
             )
 
+    removed_role = assignment.role.value
     db.delete(assignment)
+    record_case_audit(
+        db,
+        case_id=case_id,
+        actor_id=current.user.id,
+        action="case_member.removed",
+        target_type="case_assignment",
+        target_id=user_id,
+        metadata={"role": removed_role},
+    )
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

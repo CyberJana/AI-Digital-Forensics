@@ -179,7 +179,10 @@ async def test_worker_fails_closed_for_directly_queued_disabled_adapter(
     def unexpected_execution(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("ExifTool must not be executed")
 
-    monkeypatch.setattr("digital_forensics.exiftool.subprocess.run", unexpected_execution)
+    monkeypatch.setattr(
+        "digital_forensics.processing.ExifToolMetadataAdapter.run",
+        unexpected_execution,
+    )
 
     assert run_next_job(app.state.session_factory, worker_id="test-worker") is True
     with app.state.session_factory() as db:

@@ -1,9 +1,9 @@
 import json
 import os
 import shutil
-import subprocess
 from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol
 
 from digital_forensics.hashing import hash_file_read_only
 
@@ -12,7 +12,14 @@ EXIFTOOL_LICENSE_URL = "https://github.com/exiftool/exiftool/blob/master/README"
 EXIFTOOL_SOURCE_URL = "https://exiftool.org/"
 MAX_EXIFTOOL_OUTPUT_BYTES = 1_000_000
 EXIFTOOL_TIMEOUT_SECONDS = 60
-ExifToolRunner = Callable[..., subprocess.CompletedProcess[str]]
+
+
+class ExifToolProcess(Protocol):
+    returncode: int
+    stdout: str
+
+
+ExifToolRunner = Callable[..., ExifToolProcess]
 
 
 class ExifToolError(RuntimeError):

@@ -3,17 +3,23 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from authlib.integrations.starlette_client import OAuth
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
+from digital_forensics.ai_summaries import router as ai_summaries_router
 from digital_forensics.auth import router as auth_router
 from digital_forensics.cases import router as cases_router
 from digital_forensics.database import create_database_engine, create_session_factory
 from digital_forensics.evidence import router as evidence_router
 from digital_forensics.jobs import router as processing_router
 from digital_forensics.organizations import router as organizations_router
+from digital_forensics.reporting import router as reporting_router
 from digital_forensics.settings import Settings, get_settings
+from digital_forensics.storage import EvidenceObjectStore
+from digital_forensics.timeline import router as timeline_router
 
 
 @asynccontextmanager
@@ -26,6 +32,9 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        evidence_storage = application.state.evidence_storage
+        if evidence_storage is not None:
+            evidence_storage.close()
         engine = application.state.engine
         if engine is not None:
             engine.dispose()
@@ -38,6 +47,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.engine = None
     application.state.session_factory = None
     application.state.oidc_client = None
+    application.state.evidence_storage = (
+        EvidenceObjectStore(settings) if settings.evidence_storage_enabled else None
+    )
 
     if settings.database_url is not None:
         engine = create_database_engine(settings.database_url.get_secret_value())
@@ -68,10 +80,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(cases_router)
     application.include_router(evidence_router)
     application.include_router(processing_router)
+    application.include_router(timeline_router)
+    application.include_router(ai_summaries_router)
+    application.include_router(reporting_router)
 
     @application.get("/health", tags=["health"])
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @application.get("/health/ready", tags=["health"])
+    def readiness() -> dict[str, str]:
+        engine = application.state.engine
+        if engine is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="database_not_configured",
+            )
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+        except SQLAlchemyError as error:
+            logging.getLogger(__name__).error(
+                "Readiness check failed: database unavailable (%s)",
+                type(error).__name__,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="database_unavailable",
+            ) from error
+        return {"status": "ready"}
 
     return application
 

@@ -1,0 +1,149 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-digital_forensics}
+      POSTGRES_USER: ${POSTGRES_USER:-digital_forensics}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - edge
+      - db_private
+
+  migrate:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["python", "-m", "alembic", "-c", "alembic.ini", "upgrade", "head"]
+    environment: &backend_environment
+      DIGITAL_FORENSICS_ENVIRONMENT: development
+      DIGITAL_FORENSICS_DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER:-digital_forensics}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-digital_forensics}"
+      DIGITAL_FORENSICS_SESSION_SIGNING_KEY: ${DIGITAL_FORENSICS_SESSION_SIGNING_KEY:?Set DIGITAL_FORENSICS_SESSION_SIGNING_KEY in .env}
+      DIGITAL_FORENSICS_SESSION_COOKIE_SECURE: "false"
+      DIGITAL_FORENSICS_OIDC_ISSUER: ${DIGITAL_FORENSICS_OIDC_ISSUER:-}
+      DIGITAL_FORENSICS_OIDC_CLIENT_ID: ${DIGITAL_FORENSICS_OIDC_CLIENT_ID:-}
+      DIGITAL_FORENSICS_OIDC_CLIENT_SECRET: ${DIGITAL_FORENSICS_OIDC_CLIENT_SECRET:-}
+      DIGITAL_FORENSICS_OIDC_REDIRECT_URI: ${DIGITAL_FORENSICS_OIDC_REDIRECT_URI:-http://localhost:8000/auth/callback}
+      DIGITAL_FORENSICS_FRONTEND_ORIGIN: http://localhost:3000
+      DIGITAL_FORENSICS_OLLAMA_MODEL: ""
+    depends_on:
+      db:
+        condition: service_healthy
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    networks:
+      - db_private
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      <<: *backend_environment
+      DIGITAL_FORENSICS_EVIDENCE_S3_BUCKET: ${DIGITAL_FORENSICS_EVIDENCE_S3_BUCKET:-}
+      DIGITAL_FORENSICS_EVIDENCE_S3_REGION: ${DIGITAL_FORENSICS_EVIDENCE_S3_REGION:-us-east-1}
+      DIGITAL_FORENSICS_EVIDENCE_S3_ENDPOINT_URL: ${DIGITAL_FORENSICS_EVIDENCE_S3_ENDPOINT_URL:-}
+      DIGITAL_FORENSICS_EVIDENCE_S3_ACCESS_KEY_ID: ${DIGITAL_FORENSICS_EVIDENCE_S3_ACCESS_KEY_ID:-}
+      DIGITAL_FORENSICS_EVIDENCE_S3_SECRET_ACCESS_KEY: ${DIGITAL_FORENSICS_EVIDENCE_S3_SECRET_ACCESS_KEY:-}
+      DIGITAL_FORENSICS_VAULT_ADDR: ${DIGITAL_FORENSICS_VAULT_ADDR:-}
+      DIGITAL_FORENSICS_VAULT_TOKEN: ${DIGITAL_FORENSICS_VAULT_TOKEN:-}
+      DIGITAL_FORENSICS_VAULT_TOKEN_FILE: ${DIGITAL_FORENSICS_VAULT_TOKEN_FILE:-}
+      DIGITAL_FORENSICS_VAULT_NAMESPACE: ${DIGITAL_FORENSICS_VAULT_NAMESPACE:-}
+      DIGITAL_FORENSICS_VAULT_TRANSIT_KEY: ${DIGITAL_FORENSICS_VAULT_TRANSIT_KEY:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8000:8000"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    pids_limit: 128
+    mem_limit: 768m
+    cpus: 1.0
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2)"
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    networks:
+      - edge
+      - db_private
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["digital-forensics-worker"]
+    environment: *backend_environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    pids_limit: 64
+    mem_limit: 768m
+    cpus: 1.0
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    networks:
+      - db_private
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:3000"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+      - /app/.next/cache:rw,noexec,nosuid,size=128m
+    networks:
+      - edge
+    restart: unless-stopped
+
+networks:
+  edge:
+  db_private:
+    internal: true
+
+volumes:
+  postgres_data:
