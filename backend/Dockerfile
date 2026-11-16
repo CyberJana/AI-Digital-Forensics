@@ -16,7 +16,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 COPY backend/requirements-pip.lock ./requirements-pip.lock
-RUN python -m pip install --no-cache-dir --require-hashes -r requirements-pip.lock
+RUN python -m pip install --no-cache-dir --require-hashes -r requirements-pip.lock \
+    && python -m pip uninstall --yes setuptools
 RUN useradd --system --uid 10001 --create-home app
 COPY --from=build /install /usr/local
 COPY --chown=10001:10001 backend/alembic.ini ./alembic.ini

@@ -21,6 +21,8 @@ ENV NODE_ENV=production \
 WORKDIR /app
 RUN addgroup -S -g 10001 nextjs \
     && adduser -S -u 10001 -G nextjs nextjs \
+    && rm -rf /usr/local/lib/node_modules/npm \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx \
     && mkdir -p .next/cache \
     && chown -R nextjs:nextjs /app
 COPY --from=build --chown=nextjs:nextjs /app/.next/standalone ./
