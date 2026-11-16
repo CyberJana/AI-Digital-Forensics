@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+from threading import BoundedSemaphore
 from typing import AsyncIterator
 
 from authlib.integrations.starlette_client import OAuth
@@ -50,6 +51,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.evidence_storage = (
         EvidenceObjectStore(settings) if settings.evidence_storage_enabled else None
     )
+    application.state.evidence_upload_gate = BoundedSemaphore(1)
 
     if settings.database_url is not None:
         engine = create_database_engine(settings.database_url.get_secret_value())

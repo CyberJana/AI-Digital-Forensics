@@ -11,6 +11,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from pydantic import SecretStr
 
+import digital_forensics.evidence as evidence_module
 import digital_forensics.storage as storage_module
 from digital_forensics.identity import digest_token
 from digital_forensics.models import AuditEvent, AuthSession, User
@@ -179,6 +180,22 @@ def test_empty_evidence_round_trips() -> None:
     ) == b""
 
 
+def test_evidence_store_rejects_upload_over_configured_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(storage_module, "MAX_EVIDENCE_UPLOAD_BYTES", 4)
+    store = _storage()
+
+    with pytest.raises(storage_module.EvidenceTooLarge, match="10 GiB"):
+        store.store(
+            io.BytesIO(b"12345"),
+            case_id=uuid4(),
+            evidence_id=uuid4(),
+        )
+
+    assert store._s3.objects == {}
+
+
 def test_vault_transit_client_uses_encrypt_and_decrypt_api(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -283,6 +300,45 @@ async def test_uploaded_evidence_is_encrypted_and_verified_before_download(
         assert "evidence.binary_download_requested" in {
             event.action for event in audit
         }
+
+
+@pytest.mark.anyio
+async def test_evidence_upload_rejects_oversized_chunked_request(
+    client: AsyncClient,
+    app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(evidence_module, "MAX_EVIDENCE_MULTIPART_REQUEST_BYTES", 128)
+    identity = create_test_identity(app)
+    authenticate(client, identity)
+    case = await client.post(
+        f"/organizations/{identity['organization_id']}/cases",
+        json={"case_number": "STORE-003", "name": "Upload limit test"},
+        headers={"X-CSRF-Token": str(identity["csrf_token"])},
+    )
+    assert case.status_code == 201
+    store = _storage()
+    app.state.evidence_storage = store
+
+    async def oversized_body():
+        yield b"--upload-limit\r\n"
+        yield (
+            b'Content-Disposition: form-data; name="file"; filename="evidence.bin"\r\n'
+            b"Content-Type: application/octet-stream\r\n\r\n"
+        )
+        yield b"x" * 256
+
+    response = await client.post(
+        f"/cases/{case.json()['id']}/evidence/upload",
+        content=oversized_body(),
+        headers={
+            "X-CSRF-Token": str(identity["csrf_token"]),
+            "Content-Type": "multipart/form-data; boundary=upload-limit",
+        },
+    )
+
+    assert response.status_code == 413
+    assert store._s3.objects == {}
 
 
 @pytest.mark.anyio

@@ -6,10 +6,10 @@ This runbook describes work required before any staging or production use. It is
 
 Do not deploy until the system owner has approved the hosting provider, data classification, retention policy, recovery objectives, and incident contacts. The following remain mandatory:
 
-- Validate the initial S3-compatible object store and Vault Transit envelope-encryption integration against approved services. Configure private, versioned buckets, retention, backups, Vault key rotation and recovery, request-size limits, and encrypted API scratch storage. The application cannot protect plaintext temporary upload files if the host's temporary storage is not encrypted.
+- Validate the initial S3-compatible object store and Vault Transit envelope-encryption integration against approved services. Configure private, versioned buckets, retention, backups, Vault key rotation and recovery, and encrypted API scratch storage. Evidence uploads are limited to 10 GiB per file and one in-progress multipart upload per API process; the request limit allows 128 KiB of multipart overhead. Point each API process's `TMPDIR` at encrypted scratch storage sized for at least one maximum-size request plus operating headroom. The local Compose stack's 64 MiB `/tmp` is only suitable for small synthetic uploads. The application cannot verify that a temporary-storage mount is encrypted.
 - Approve and independently validate an OS-level worker sandbox, filesystem policy, egress policy, and resource limits before enabling any parser.
 - Configure PostgreSQL over TLS, enforce identity-provider MFA, verify OIDC assurance/configuration, and store secrets in an approved secret manager.
-- Generate and commit Python/npm lockfiles, pin container base images by digest, run dependency and image vulnerability scans, and review/remediate findings.
+- Keep Python/npm lockfiles and container base-image digests current. CI audits Python/npm dependencies and reports high and critical OS/library vulnerabilities in the application and PostgreSQL images. Review/remediation of findings and scans of any additional production images remain release gates; a passing CI run does not approve an image for production.
 - Exercise migrations, authorization and tenant-isolation tests, load/performance limits, backup/restore, and rollback in an approved staging environment.
 - Complete an independent threat-model/security review. The application audit table is not tamper-proof and does not replace platform audit logs.
 

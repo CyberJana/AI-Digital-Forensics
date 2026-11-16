@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Iterator
 from urllib.parse import quote
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.responses import StreamingResponse
+from starlette.types import Message, Receive
 
 from digital_forensics.audit import record_case_audit
 from digital_forensics.case_access import CaseAccess, get_case_access, require_case_roles
@@ -28,6 +30,7 @@ from digital_forensics.models import (
 )
 from digital_forensics.storage import (
     EvidenceIntegrityError,
+    MAX_EVIDENCE_UPLOAD_BYTES,
     EvidenceObjectStore,
     EvidenceTooLarge,
     StorageBusy,
@@ -39,6 +42,47 @@ logger = logging.getLogger(__name__)
 DatabaseSession = Annotated[Session, Depends(get_db_session)]
 CurrentUser = Annotated[AuthenticatedUser, Depends(get_authenticated_user)]
 CsrfProtected = Annotated[None, Depends(require_csrf)]
+MAX_MULTIPART_OVERHEAD_BYTES = 128 * 1024
+MAX_MULTIPART_FIELD_BYTES = 16 * 1024
+MAX_EVIDENCE_MULTIPART_REQUEST_BYTES = (
+    MAX_EVIDENCE_UPLOAD_BYTES + MAX_MULTIPART_OVERHEAD_BYTES
+)
+
+
+class EvidenceUploadRequestTooLarge(Exception):
+    pass
+
+
+def _limited_receive(receive: Receive, max_bytes: int) -> Receive:
+    received_bytes = 0
+
+    async def receive_with_limit() -> Message:
+        nonlocal received_bytes
+        message = await receive()
+        if message["type"] == "http.request":
+            received_bytes += len(message.get("body", b""))
+            if received_bytes > max_bytes:
+                raise EvidenceUploadRequestTooLarge
+        return message
+
+    return receive_with_limit
+
+
+def require_evidence_upload_slot(request: Request) -> Iterator[None]:
+    upload_gate: BoundedSemaphore = request.app.state.evidence_upload_gate
+    if not upload_gate.acquire(blocking=False):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Another evidence upload is in progress",
+            headers={"Retry-After": "30"},
+        )
+    try:
+        yield
+    finally:
+        upload_gate.release()
+
+
+EvidenceUploadSlot = Annotated[None, Depends(require_evidence_upload_slot)]
 
 
 class RegisterEvidenceRequest(BaseModel):
@@ -239,6 +283,7 @@ async def upload_evidence(
     db: DatabaseSession,
     current: CurrentUser,
     _: CsrfProtected,
+    _upload_slot: EvidenceUploadSlot,
 ) -> dict[str, object]:
     access = get_case_access(db, current.user.id, case_id)
     _require_evidence_writer(access)
@@ -248,7 +293,43 @@ async def upload_evidence(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Encrypted evidence storage is not configured",
         )
-    form = await request.form(max_files=1, max_fields=6)
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared_size = int(content_length)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid Content-Length",
+            ) from error
+        if declared_size < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid Content-Length",
+            )
+        if declared_size > MAX_EVIDENCE_MULTIPART_REQUEST_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="Evidence upload request exceeds the configured size limit",
+            )
+    limited_request = Request(
+        request.scope,
+        receive=_limited_receive(
+            request.receive,
+            MAX_EVIDENCE_MULTIPART_REQUEST_BYTES,
+        ),
+    )
+    try:
+        form = await limited_request.form(
+            max_files=1,
+            max_fields=6,
+            max_part_size=MAX_MULTIPART_FIELD_BYTES,
+        )
+    except EvidenceUploadRequestTooLarge as error:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Evidence upload request exceeds the configured size limit",
+        ) from error
     allowed_fields = {
         "evidence_number",
         "name",
@@ -303,6 +384,12 @@ async def upload_evidence(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Evidence upload requires one file",
+        )
+    if file.size is not None and file.size > MAX_EVIDENCE_UPLOAD_BYTES:
+        await form.close()
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Evidence exceeds the 10 GiB per-file upload limit",
         )
     if db.scalar(
         select(EvidenceItem).where(
