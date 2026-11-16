@@ -16,7 +16,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 COPY backend/requirements-pip.lock ./requirements-pip.lock
-RUN python -m pip install --no-cache-dir --require-hashes -r requirements-pip.lock \
+RUN python -m pip install --no-cache-dir --require-hashes -r requirements-pip.lock
 RUN useradd --system --uid 10001 --create-home app
 COPY --from=build /install /usr/local
 RUN set -eu; \
