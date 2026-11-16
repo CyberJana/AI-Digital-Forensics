@@ -51,8 +51,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: docker build --file backend/Dockerfile --tag ai-digital-forensics-api:ci .
-      - name: Inspect setuptools artifacts in the API image
-        run: docker run --rm --user 0:0 --entrypoint sh ai-digital-forensics-api:ci -c "find /usr /root -iname '*setuptools*' -print"
       - run: docker build --file frontend/Dockerfile --tag ai-digital-forensics-frontend:ci .
       - run: docker build --file postgres/Dockerfile --tag ai-digital-forensics-postgres:ci .
       - name: Scan API image for high and critical vulnerabilities

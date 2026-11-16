@@ -16,20 +16,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 COPY backend/requirements-pip.lock ./requirements-pip.lock
+COPY backend/requirements-build.lock ./requirements-build.lock
 RUN python -m pip install --no-cache-dir --require-hashes -r requirements-pip.lock
+RUN python -m pip install --no-cache-dir --require-hashes --no-deps -r requirements-build.lock
 RUN useradd --system --uid 10001 --create-home app
 COPY --from=build /install /usr/local
 RUN set -eu; \
     if dpkg-query -W -f='${db:Status-Status}' python3-setuptools 2>/dev/null | grep -q '^installed$'; then \
         dpkg --purge python3-setuptools; \
     fi; \
-    find /usr -type d \( -name setuptools -o -name 'setuptools-*.dist-info' -o -name 'setuptools-*.egg-info' \) \
-        -prune -exec rm -rf {} +; \
-    if find /usr -type d \( -name setuptools -o -name 'setuptools-*.dist-info' -o -name 'setuptools-*.egg-info' \) \
-        -print -quit | grep -q .; then \
-        echo "setuptools remains in the runtime image" >&2; \
-        exit 1; \
-    fi
+    python -c "import setuptools; assert setuptools.__version__ == '84.2.1'"
 COPY --chown=10001:10001 backend/alembic.ini ./alembic.ini
 COPY --chown=10001:10001 backend/migrations ./migrations
 
