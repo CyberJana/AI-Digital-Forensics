@@ -21,11 +21,12 @@ def _broker_config(
     tmp_path: Path,
     *,
     sandbox_image: str = "registry.example.test/forensics/exiftool@sha256:" + "a" * 64,
+    socket_gid: int = 1001,
     worker_uid: int = 1002,
 ) -> BrokerConfig:
     return BrokerConfig(
         socket_path=tmp_path / "broker.sock",
-        socket_gid=1001,
+        socket_gid=socket_gid,
         worker_uid=worker_uid,
         staging_root=tmp_path,
         sandbox_image=sandbox_image,
@@ -40,6 +41,26 @@ def test_broker_configuration_requires_pinned_image(tmp_path: Path) -> None:
         _broker_config(tmp_path, sandbox_image="exiftool:latest").validate()
     with pytest.raises(ValueError, match="must be unprivileged"):
         _broker_config(tmp_path, worker_uid=0).validate()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="The host broker is Linux-only")
+def test_broker_socket_is_created_with_group_access_and_restores_umask(
+    tmp_path: Path,
+) -> None:
+    broker = broker_module.ExifToolBroker.__new__(broker_module.ExifToolBroker)
+    broker.config = _broker_config(tmp_path, socket_gid=os.getegid())
+    broker._socket = None
+    broker._socket_identity = None
+    original_umask = os.umask(0o077)
+    listener = None
+    try:
+        listener = broker._prepare_socket()
+        assert broker.config.socket_path.stat().st_mode & 0o777 == 0o660
+        assert os.umask(0o077) == 0o077
+    finally:
+        os.umask(original_umask)
+        if listener is not None:
+            broker.close()
 
 
 def test_broker_command_uses_fixed_isolated_container_policy(tmp_path: Path) -> None:

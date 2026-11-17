@@ -9,8 +9,7 @@ import signal
 import socket
 import stat
 import struct
-# Subprocess use is restricted to fixed, validated Podman argument vectors.
-import subprocess  # nosec B404
+import subprocess
 import sys
 import tempfile
 import time
@@ -326,10 +325,12 @@ class ExifToolBroker:
             path.unlink()
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            listener.bind(str(path))
+            previous_umask = os.umask(0o117)
+            try:
+                listener.bind(str(path))
+            finally:
+                os.umask(previous_umask)
             os.chown(path, os.geteuid(), self.config.socket_gid)
-            # Group access lets the configured worker connect to the broker socket.
-            os.chmod(path, 0o660)  # nosec B103
             listener.listen(8)
             self._socket_identity = (path.stat().st_dev, path.stat().st_ino)
             self._socket = listener
@@ -452,7 +453,7 @@ class ExifToolBroker:
         execution_error: Exception | None = None
         process_cleanup_failed = False
         try:
-            process = subprocess.Popen(  # nosec B603
+            process = subprocess.Popen(
                 command,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -490,7 +491,7 @@ class ExifToolBroker:
                 except subprocess.TimeoutExpired:
                     process_cleanup_failed = True
             try:
-                cleanup = subprocess.run(  # nosec B603
+                cleanup = subprocess.run(
                     [
                         str(self.config.podman_path),
                         "--remote=false",
