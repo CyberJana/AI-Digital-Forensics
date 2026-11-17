@@ -1,15 +1,14 @@
 import argparse
+import asyncio
 import array
 import hashlib
 import json
 import os
 import re
-import selectors
 import signal
 import socket
 import stat
 import struct
-import subprocess  # nosec B404
 import sys
 import tempfile
 import time
@@ -239,50 +238,94 @@ def _process_environment(config: BrokerConfig) -> dict[str, str]:
     }
 
 
-def _read_bounded_process(
-    process: subprocess.Popen[bytes],
+async def _read_limited_stream(
+    stream: asyncio.StreamReader,
     *,
-    timeout_seconds: int,
-) -> tuple[int, bytes, bytes]:
-    if process.stdout is None or process.stderr is None:
-        raise RuntimeError("broker_process_pipes_unavailable")
-    limits = {process.stdout: MAX_OUTPUT_BYTES, process.stderr: MAX_STDERR_BYTES}
-    buffers = {process.stdout: bytearray(), process.stderr: bytearray()}
-    selector = selectors.DefaultSelector()
+    limit: int,
+) -> bytes:
+    output = bytearray()
+    while chunk := await stream.read(65_537):
+        if len(output) + len(chunk) > limit:
+            raise ValueError("sandbox_output_too_large")
+        output.extend(chunk)
+    return bytes(output)
+
+
+async def _terminate_process(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
     try:
-        for stream in limits:
-            os.set_blocking(stream.fileno(), False)
-            selector.register(stream, selectors.EVENT_READ)
-        deadline = time.monotonic() + timeout_seconds
-        while selector.get_map():
-            remaining = deadline - time.monotonic()
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError as error:
+        raise RuntimeError("sandbox_cleanup_failed") from error
+    try:
+        await asyncio.wait_for(process.wait(), timeout=5)
+    except TimeoutError as error:
+        raise RuntimeError("sandbox_cleanup_failed") from error
+
+
+async def _run_limited_process(
+    command: list[str],
+    *,
+    environment: dict[str, str],
+    timeout_seconds: int,
+    capture_output: bool,
+) -> tuple[int, bytes, bytes]:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE if capture_output else asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE if capture_output else asyncio.subprocess.DEVNULL,
+        close_fds=True,
+        start_new_session=True,
+        env=environment,
+    )
+    readers: list[asyncio.Task[bytes]] = []
+    try:
+        if capture_output:
+            if process.stdout is None or process.stderr is None:
+                raise RuntimeError("broker_process_pipes_unavailable")
+            readers = [
+                asyncio.create_task(
+                    _read_limited_stream(process.stdout, limit=MAX_OUTPUT_BYTES)
+                ),
+                asyncio.create_task(
+                    _read_limited_stream(process.stderr, limit=MAX_STDERR_BYTES)
+                ),
+            ]
+            remaining = deadline - loop.time()
             if remaining <= 0:
                 raise TimeoutError("sandbox_timeout")
-            for key, _ in selector.select(min(remaining, 0.25)):
-                stream = key.fileobj
-                chunk = os.read(stream.fileno(), 65_537)
-                if not chunk:
-                    selector.unregister(stream)
-                    continue
-                buffer = buffers[stream]
-                if len(buffer) + len(chunk) > limits[stream]:
-                    raise ValueError("sandbox_output_too_large")
-                buffer.extend(chunk)
-        remaining = max(0.01, deadline - time.monotonic())
-        return (
-            process.wait(timeout=remaining),
-            bytes(buffers[process.stdout]),
-            bytes(buffers[process.stderr]),
-        )
-    except (TimeoutError, subprocess.TimeoutExpired, ValueError):
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    asyncio.gather(*readers),
+                    timeout=remaining,
+                )
+            except TimeoutError as error:
+                raise TimeoutError("sandbox_timeout") from error
+        else:
+            stdout, stderr = b"", b""
+
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise TimeoutError("sandbox_timeout")
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
+            returncode = await asyncio.wait_for(process.wait(), timeout=remaining)
+        except TimeoutError as error:
+            raise TimeoutError("sandbox_timeout") from error
+        return returncode, stdout, stderr
+    except BaseException:
+        for reader in readers:
+            reader.cancel()
+        try:
+            await _terminate_process(process)
+        finally:
+            await asyncio.gather(*readers, return_exceptions=True)
         raise
-    finally:
-        selector.close()
 
 
 class ExifToolBroker:
@@ -397,7 +440,7 @@ class ExifToolBroker:
                         timeout_seconds=max(1, int(remaining)),
                     )
             _send_response(connection, result)
-        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError, RuntimeError) as error:
             message = str(error)
             if message not in {
                 "broker_request_invalid",
@@ -446,74 +489,56 @@ class ExifToolBroker:
             container_name=container_name,
             staged_input=staged_input,
         )
-        process: subprocess.Popen[bytes] | None = None
         output = b""
         stderr = b""
         returncode = -1
         execution_error: Exception | None = None
-        process_cleanup_failed = False
         try:
-            process = subprocess.Popen(  # nosec B603
-                command,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                close_fds=True,
-                start_new_session=True,
-                env=_process_environment(self.config),
-            )
-            returncode, output, stderr = _read_bounded_process(
-                process,
-                timeout_seconds=timeout_seconds or self.config.timeout_seconds,
+            returncode, output, stderr = asyncio.run(
+                _run_limited_process(
+                    command,
+                    environment=_process_environment(self.config),
+                    timeout_seconds=timeout_seconds or self.config.timeout_seconds,
+                    capture_output=True,
+                )
             )
             if returncode != 0:
                 execution_error = RuntimeError("sandbox_execution_failed")
             elif stderr:
                 execution_error = RuntimeError("sandbox_stderr_not_empty")
-        except (OSError, RuntimeError, TimeoutError, ValueError, subprocess.SubprocessError) as error:
+        except (
+            OSError,
+            RuntimeError,
+            TimeoutError,
+            ValueError,
+        ) as error:
             execution_error = error
-            if process is not None and process.poll() is None:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                process.wait()
         finally:
-            if process is not None and process.poll() is None:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                except OSError:
-                    process_cleanup_failed = True
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process_cleanup_failed = True
             try:
-                cleanup = subprocess.run(  # nosec B603
-                    [
-                        str(self.config.podman_path),
-                        "--remote=false",
-                        "rm",
-                        "--force",
-                        "--ignore",
-                        container_name,
-                    ],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    close_fds=True,
-                    start_new_session=True,
-                    env=_process_environment(self.config),
-                    timeout=10,
-                    check=False,
+                cleanup_command = [
+                    str(self.config.podman_path),
+                    "--remote=false",
+                    "rm",
+                    "--force",
+                    "--ignore",
+                    container_name,
+                ]
+                cleanup_returncode, _, _ = asyncio.run(
+                    _run_limited_process(
+                        cleanup_command,
+                        environment=_process_environment(self.config),
+                        timeout_seconds=10,
+                        capture_output=False,
+                    )
                 )
-            except (OSError, subprocess.SubprocessError) as error:
+            except (
+                OSError,
+                RuntimeError,
+                TimeoutError,
+                ValueError,
+            ) as error:
                 raise RuntimeError("sandbox_cleanup_failed") from error
-            if cleanup.returncode != 0:
-                raise RuntimeError("sandbox_cleanup_failed")
-            if process_cleanup_failed:
+            if cleanup_returncode != 0:
                 raise RuntimeError("sandbox_cleanup_failed")
         if execution_error is not None:
             error = str(execution_error)

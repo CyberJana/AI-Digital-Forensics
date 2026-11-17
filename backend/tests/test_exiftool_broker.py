@@ -1,8 +1,8 @@
+import asyncio
 import hashlib
 import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -34,6 +34,64 @@ def _broker_config(
         home=tmp_path,
         runtime_dir=tmp_path,
     )
+
+
+def _mock_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+    outputs: list[tuple[bytes | None, bytes | None]],
+) -> tuple[list[tuple[list[str], dict[str, object]]], list[int]]:
+    invocations: list[tuple[list[str], dict[str, object]]] = []
+    killed_process_groups: list[int] = []
+
+    class FakeStream:
+        def __init__(self, content: bytes | None) -> None:
+            self.content = content
+            self.has_read = False
+
+        async def read(self, _limit: int) -> bytes:
+            if self.content is None:
+                await asyncio.sleep(60)
+            if self.has_read:
+                return b""
+            self.has_read = True
+            return self.content or b""
+
+    class FakeProcess:
+        def __init__(self, output: bytes | None, error: bytes | None) -> None:
+            self.pid = 123
+            self.returncode: int | None = None
+            self.stdout = FakeStream(output)
+            self.stderr = FakeStream(error)
+
+        async def wait(self) -> int:
+            self.returncode = 0
+            return self.returncode
+
+    async def fake_create_subprocess_exec(
+        executable: str,
+        *args: str,
+        **kwargs: object,
+    ) -> FakeProcess:
+        command = [executable, *args]
+        invocations.append((command, kwargs))
+        if command[2:3] == ["rm"]:
+            return FakeProcess(b"", b"")
+        output, error = outputs.pop(0)
+        return FakeProcess(output, error)
+
+    monkeypatch.setattr(
+        broker_module.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        broker_module.os,
+        "killpg",
+        lambda pid, _signal: killed_process_groups.append(pid),
+        raising=False,
+    )
+    monkeypatch.setattr(broker_module.signal, "SIGKILL", 9, raising=False)
+    return invocations, killed_process_groups
 
 
 def test_broker_configuration_requires_pinned_image(tmp_path: Path) -> None:
@@ -101,40 +159,18 @@ def test_broker_run_passes_fixed_command_and_strips_container_environment(
     config = _broker_config(tmp_path)
     broker = broker_module.ExifToolBroker.__new__(broker_module.ExifToolBroker)
     broker.config = config
-    invocation: dict[str, object] = {}
-
-    class FakeProcess:
-        pid = 123
-        stdout = object()
-        stderr = object()
-
-        def poll(self) -> int:
-            return 0
-
-    def fake_popen(command: list[str], **kwargs: object) -> FakeProcess:
-        invocation.update(command=command, **kwargs)
-        return FakeProcess()
-
-    monkeypatch.setattr(broker_module.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(
-        broker_module,
-        "_read_bounded_process",
-        lambda *_args, **_kwargs: (0, b"12.80\n", b""),
-    )
-    monkeypatch.setattr(
-        broker_module.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0),
-    )
+    invocations, _ = _mock_subprocess(monkeypatch, [(b"12.80\n", b"")])
 
     assert broker._run_container(action="version") == {
         "returncode": 0,
         "stdout": "12.80\n",
     }
-    assert "--network=none" in invocation["command"]
-    assert invocation["start_new_session"] is True
-    assert invocation["close_fds"] is True
-    assert set(invocation["env"]) == {"HOME", "PATH", "TMPDIR", "XDG_RUNTIME_DIR"}
+    command, options = invocations[0]
+    assert "--network=none" in command
+    assert options["start_new_session"] is True
+    assert options["close_fds"] is True
+    assert set(options["env"]) == {"HOME", "PATH", "TMPDIR", "XDG_RUNTIME_DIR"}
+    assert invocations[1][0][2] == "rm"
 
 
 def test_broker_fails_closed_when_output_exceeds_limit(
@@ -143,29 +179,9 @@ def test_broker_fails_closed_when_output_exceeds_limit(
 ) -> None:
     broker = broker_module.ExifToolBroker.__new__(broker_module.ExifToolBroker)
     broker.config = _broker_config(tmp_path)
-
-    class FakeProcess:
-        pid = 123
-        stdout = object()
-        stderr = object()
-
-        def poll(self) -> int:
-            return 0
-
-    monkeypatch.setattr(
-        broker_module.subprocess,
-        "Popen",
-        lambda *_args, **_kwargs: FakeProcess(),
-    )
-
-    def over_limit(*_args: object, **_kwargs: object) -> tuple[int, bytes, bytes]:
-        raise ValueError("sandbox_output_too_large")
-
-    monkeypatch.setattr(broker_module, "_read_bounded_process", over_limit)
-    monkeypatch.setattr(
-        broker_module.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0),
+    _mock_subprocess(
+        monkeypatch,
+        [(b"x" * (broker_module.MAX_OUTPUT_BYTES + 1), b"")],
     )
 
     with pytest.raises(RuntimeError, match="sandbox_output_too_large"):
@@ -178,33 +194,27 @@ def test_broker_fails_closed_on_runtime_warnings(
 ) -> None:
     broker = broker_module.ExifToolBroker.__new__(broker_module.ExifToolBroker)
     broker.config = _broker_config(tmp_path)
-
-    class FakeProcess:
-        pid = 123
-        stdout = object()
-        stderr = object()
-
-        def poll(self) -> int:
-            return 0
-
-    monkeypatch.setattr(
-        broker_module.subprocess,
-        "Popen",
-        lambda *_args, **_kwargs: FakeProcess(),
-    )
-    monkeypatch.setattr(
-        broker_module,
-        "_read_bounded_process",
-        lambda *_args, **_kwargs: (0, b"12.80\n", b"resource limits unavailable"),
-    )
-    monkeypatch.setattr(
-        broker_module.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0),
-    )
+    _mock_subprocess(monkeypatch, [(b"12.80\n", b"resource limits unavailable")])
 
     with pytest.raises(RuntimeError, match="sandbox_execution_failed"):
         broker._run_container(action="version")
+
+
+def test_broker_kills_process_group_on_output_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, killed_process_groups = _mock_subprocess(monkeypatch, [(None, b"")])
+
+    with pytest.raises(TimeoutError, match="sandbox_timeout"):
+        asyncio.run(
+            broker_module._run_limited_process(
+                ["podman", "run"],
+                environment={},
+                timeout_seconds=0.01,
+                capture_output=True,
+            )
+        )
+    assert killed_process_groups == [123]
 
 
 def test_broker_protocol_rejects_arbitrary_commands_and_extra_fields() -> None:
