@@ -4,7 +4,8 @@ from typing import Protocol
 from uuid import UUID
 
 from digital_forensics.custody import verify_custody_chain
-from digital_forensics.exiftool import collect_metadata
+from digital_forensics.exiftool import collect_metadata, collect_metadata_sandboxed
+from digital_forensics.exiftool_broker import ExifToolBrokerClient
 from digital_forensics.models import CustodyEvent
 
 
@@ -47,15 +48,32 @@ class ExifToolMetadataAdapter:
     version = "1.0"
     enabled = False
 
-    def run(self, context: ProcessingContext) -> dict[str, object]:
-        if not self.enabled:
+    def run(
+        self,
+        context: ProcessingContext,
+        *,
+        broker: ExifToolBrokerClient | None = None,
+    ) -> dict[str, object]:
+        if broker is not None and type(broker) is not ExifToolBrokerClient:
+            raise RuntimeError("sandbox_required")
+        if not self.enabled and broker is None:
             raise RuntimeError("sandbox_required")
         if context.working_copy_path is None:
             raise RuntimeError("working_copy_unavailable")
-        result = collect_metadata(
-            context.working_copy_path,
-            executable=context.exiftool_executable,
-        )
+        if broker is None:
+            result = collect_metadata(
+                context.working_copy_path,
+                executable=context.exiftool_executable,
+            )
+        else:
+            if context.expected_sha256 is None:
+                raise RuntimeError("working_copy_digest_unavailable")
+            result = collect_metadata_sandboxed(
+                context.working_copy_path,
+                evidence_id=context.evidence_id,
+                expected_sha256=context.expected_sha256,
+                runner=broker,
+            )
         if (
             context.expected_sha256 is not None
             and result["working_copy_sha256"] != context.expected_sha256

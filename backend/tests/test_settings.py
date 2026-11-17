@@ -70,3 +70,19 @@ def test_storage_configuration_requires_vault_and_paired_s3_credentials() -> Non
             vault_token=SecretStr("token"),
             vault_transit_key="evidence",
         )
+
+
+def test_exiftool_broker_is_disabled_and_requires_complete_worker_paths(
+    tmp_path: Path,
+) -> None:
+    assert Settings().exiftool_sandbox_enabled is False
+
+    with pytest.raises(ValidationError, match="requires a working-copy root"):
+        Settings(exiftool_sandbox_enabled=True)
+
+    configured = Settings(
+        exiftool_sandbox_enabled=True,
+        working_copy_root=tmp_path,
+        exiftool_broker_socket_path=tmp_path / "exiftool-broker.sock",
+    )
+    assert configured.exiftool_sandbox_enabled is True

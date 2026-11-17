@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     database_url: SecretStr | None = None
     working_copy_root: Path | None = None
     exiftool_executable: str = "exiftool"
+    exiftool_sandbox_enabled: bool = False
+    exiftool_broker_socket_path: Path | None = None
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str | None = None
     ollama_timeout_seconds: int = 120
@@ -93,6 +95,15 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_session_settings(self) -> "Settings":
+        if self.exiftool_sandbox_enabled and (
+            self.working_copy_root is None
+            or not self.working_copy_root.is_absolute()
+            or self.exiftool_broker_socket_path is None
+            or not self.exiftool_broker_socket_path.is_absolute()
+        ):
+            raise ValueError(
+                "ExifTool sandbox requires a working-copy root and absolute broker socket path"
+            )
         if self.environment != "development" and not self.oidc_enabled:
             raise ValueError("Staging and production require database and OIDC configuration")
         if self.environment != "development" and not self.session_cookie_secure:
