@@ -9,7 +9,7 @@ import signal
 import socket
 import stat
 import struct
-import subprocess
+import subprocess  # nosec B404
 import sys
 import tempfile
 import time
@@ -453,7 +453,7 @@ class ExifToolBroker:
         execution_error: Exception | None = None
         process_cleanup_failed = False
         try:
-            process = subprocess.Popen(
+            process = subprocess.Popen(  # nosec B603
                 command,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -491,7 +491,7 @@ class ExifToolBroker:
                 except subprocess.TimeoutExpired:
                     process_cleanup_failed = True
             try:
-                cleanup = subprocess.run(
+                cleanup = subprocess.run(  # nosec B603
                     [
                         str(self.config.podman_path),
                         "--remote=false",
