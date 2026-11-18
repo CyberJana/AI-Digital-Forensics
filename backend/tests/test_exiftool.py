@@ -135,6 +135,22 @@ def test_collect_metadata_rejects_nonstandard_json_constants(
         collect_metadata(working_copy, runner=runner)
 
 
+def test_collect_metadata_rejects_oversized_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    working_copy = tmp_path / "evidence.working-copy"
+    working_copy.write_bytes(b"synthetic evidence")
+    outputs = [
+        SimpleNamespace(returncode=0, stdout="12.80\n", stderr=""),
+        SimpleNamespace(returncode=0, stdout=" " * 1_000_001, stderr=""),
+    ]
+    monkeypatch.setattr("digital_forensics.exiftool.shutil.which", lambda _: "exiftool")
+
+    with pytest.raises(ExifToolError, match="exiftool_output_too_large"):
+        collect_metadata(working_copy, runner=lambda *_args, **_kwargs: outputs.pop(0))
+
+
 def test_collect_metadata_requires_sandbox_runner(tmp_path: Path) -> None:
     working_copy = tmp_path / "evidence.working-copy"
     working_copy.write_bytes(b"synthetic evidence")

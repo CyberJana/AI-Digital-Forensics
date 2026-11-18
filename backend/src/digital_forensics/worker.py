@@ -13,6 +13,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from digital_forensics.database import create_database_engine, create_session_factory
+from digital_forensics.exiftool_broker import ExifToolBrokerClient
 from digital_forensics.models import (
     CaseStatus,
     CustodyEvent,
@@ -22,7 +23,7 @@ from digital_forensics.models import (
     ProcessingJobStatus,
     utc_now,
 )
-from digital_forensics.processing import ProcessingContext, get_adapter
+from digital_forensics.processing import ExifToolMetadataAdapter, ProcessingContext, get_adapter
 from digital_forensics.settings import get_settings
 from digital_forensics.working_copy import resolve_verified_working_copy
 
@@ -109,6 +110,8 @@ def run_next_job(
     lease_seconds: int = 300,
     working_copy_root: Path | None = None,
     exiftool_executable: str = "exiftool",
+    exiftool_sandbox_enabled: bool = False,
+    exiftool_broker_socket_path: Path | None = None,
 ) -> bool:
     job_id = claim_next_job(
         session_factory,
@@ -127,10 +130,18 @@ def run_next_job(
         adapter = get_adapter(adapter_name)
         if adapter is None or adapter.version != adapter_version:
             raise RuntimeError("adapter_unavailable")
-        if not adapter.enabled:
+        sandbox_configured = (
+            adapter.name == "exiftool-metadata"
+            and exiftool_sandbox_enabled
+            and exiftool_broker_socket_path is not None
+            and working_copy_root is not None
+        )
+        if not adapter.enabled and not sandbox_configured:
             raise RuntimeError("adapter_disabled")
         if adapter.name == "exiftool-metadata":
-            if working_copy_root is None:
+            if not sandbox_configured:
+                raise RuntimeError("adapter_disabled")
+            if working_copy_root is None or exiftool_broker_socket_path is None:
                 raise RuntimeError("working_copy_root_unconfigured")
             try:
                 context = replace(
@@ -144,7 +155,14 @@ def run_next_job(
                 )
             except (OSError, ValueError) as error:
                 raise RuntimeError("working_copy_invalid") from error
-        result = adapter.run(context)
+            if not isinstance(adapter, ExifToolMetadataAdapter):
+                raise RuntimeError("adapter_unavailable")
+            result = adapter.run(
+                context,
+                broker=ExifToolBrokerClient(exiftool_broker_socket_path),
+            )
+        else:
+            result = adapter.run(context)
         if not isinstance(result, dict):
             raise ValueError("adapter_result_not_object")
         serialized_result = json.dumps(result, sort_keys=True, allow_nan=False)
@@ -162,6 +180,7 @@ def run_next_job(
             "working_copy_invalid",
             "working_copy_digest_mismatch",
             "working_copy_unavailable",
+            "working_copy_digest_unavailable",
         } else type(error).__name__
         retryable = error_code not in {
             "adapter_unavailable",
@@ -174,6 +193,7 @@ def run_next_job(
             "working_copy_invalid",
             "working_copy_digest_mismatch",
             "working_copy_unavailable",
+            "working_copy_digest_unavailable",
         }
         finished = _finish_job(
             session_factory,
@@ -303,6 +323,8 @@ def main() -> None:
                 lease_seconds=args.lease_seconds,
                 working_copy_root=settings.working_copy_root,
                 exiftool_executable=settings.exiftool_executable,
+                exiftool_sandbox_enabled=settings.exiftool_sandbox_enabled,
+                exiftool_broker_socket_path=settings.exiftool_broker_socket_path,
             )
             if not processed:
                 time.sleep(args.poll_interval_seconds)

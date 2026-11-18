@@ -1,9 +1,11 @@
 import json
 import os
 import shutil
+import stat
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
+from uuid import UUID
 
 from digital_forensics.hashing import hash_file_read_only
 
@@ -20,6 +22,18 @@ class ExifToolProcess(Protocol):
 
 
 ExifToolRunner = Callable[..., ExifToolProcess]
+
+
+class ExifToolSandboxRunner(Protocol):
+    def run_version(self) -> dict[str, object]: ...
+
+    def run_metadata(
+        self,
+        source_fd: int,
+        *,
+        evidence_id: UUID,
+        expected_sha256: str,
+    ) -> dict[str, object]: ...
 
 
 class ExifToolError(RuntimeError):
@@ -81,11 +95,72 @@ def collect_metadata(
     )
     if result.returncode != 0:
         raise ExifToolError("exiftool_execution_failed")
-    if len(result.stdout.encode("utf-8")) > MAX_EXIFTOOL_OUTPUT_BYTES:
+    return _build_metadata_result(working_copy, source_info, initial_hash, tool_version, result.stdout)
+
+
+def collect_metadata_sandboxed(
+    working_copy: Path,
+    *,
+    evidence_id: UUID,
+    expected_sha256: str,
+    runner: ExifToolSandboxRunner,
+) -> dict[str, object]:
+    source_info = working_copy.lstat()
+    if not working_copy.is_file() or working_copy.is_symlink():
+        raise ExifToolError("working_copy_not_regular")
+    initial_hash = _working_copy_hash(working_copy, source_info)
+    if initial_hash != expected_sha256:
+        raise ExifToolError("working_copy_digest_mismatch")
+
+    version_process = runner.run_version()
+    if version_process.get("returncode") != 0:
+        raise ExifToolError("exiftool_version_failed")
+    tool_version = version_process.get("stdout")
+    if not isinstance(tool_version, str) or not tool_version.strip():
+        raise ExifToolError("exiftool_version_missing")
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        source_fd = os.open(working_copy, flags)
+    except OSError as error:
+        raise ExifToolError("working_copy_not_regular") from error
+    try:
+        opened_info = os.fstat(source_fd)
+        if (
+            not stat.S_ISREG(opened_info.st_mode)
+            or opened_info.st_dev != source_info.st_dev
+            or opened_info.st_ino != source_info.st_ino
+            or opened_info.st_size != source_info.st_size
+            or opened_info.st_mtime_ns != source_info.st_mtime_ns
+        ):
+            raise ExifToolError("working_copy_changed_during_analysis")
+        result = runner.run_metadata(
+            source_fd,
+            evidence_id=evidence_id,
+            expected_sha256=expected_sha256,
+        )
+    finally:
+        os.close(source_fd)
+    if result.get("returncode") != 0:
+        raise ExifToolError("exiftool_execution_failed")
+    output = result.get("stdout")
+    if not isinstance(output, str):
+        raise ExifToolError("exiftool_output_invalid")
+    return _build_metadata_result(working_copy, source_info, initial_hash, tool_version.strip(), output)
+
+
+def _build_metadata_result(
+    working_copy: Path,
+    source_info: os.stat_result,
+    initial_hash: str,
+    tool_version: str,
+    output: str,
+) -> dict[str, object]:
+    if len(output.encode("utf-8")) > MAX_EXIFTOOL_OUTPUT_BYTES:
         raise ExifToolError("exiftool_output_too_large")
 
     try:
-        documents = json.loads(result.stdout, parse_constant=_reject_json_constant)
+        documents = json.loads(output, parse_constant=_reject_json_constant)
     except (json.JSONDecodeError, ValueError) as error:
         raise ExifToolError("exiftool_output_invalid") from error
     if (
