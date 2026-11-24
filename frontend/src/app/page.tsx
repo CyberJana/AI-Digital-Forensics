@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import ReportingPanel from "./ReportingPanel";
 import EvidenceStoragePanel from "./EvidenceStoragePanel";
+import ManagementPanel from "./ManagementPanel";
 
 const API_BASE_URL = (
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
@@ -221,6 +222,8 @@ export default function Home() {
   } = currentCaseOverview ?? {};
   const loadingCase = Boolean(selectedCaseId) && !isCurrentCaseOverview;
   const [pageError, setPageError] = useState("");
+  const [summaryBusy, setSummaryBusy] = useState(false);
+  const [summaryActionError, setSummaryActionError] = useState("");
 
   const selectedCase = useMemo(
     () => cases.find((item) => item.id === selectedCaseId) ?? null,
@@ -386,6 +389,38 @@ export default function Home() {
     }
   }
 
+  async function createAISummary() {
+    if (!selectedCase || !csrfToken) return;
+    const targetCaseId = selectedCase.id;
+    setSummaryBusy(true);
+    setSummaryActionError("");
+    try {
+      const createdSummary = await requestJson<AISummary>(
+        `/cases/${encodeURIComponent(targetCaseId)}/ai-summaries`,
+        {
+          method: "POST",
+          headers: { "X-CSRF-Token": csrfToken },
+        },
+      );
+      setCaseOverview((current) =>
+        current.caseId === targetCaseId
+          ? {
+              ...current,
+              summaries: [
+                createdSummary,
+                ...current.summaries.filter((summary) => summary.id !== createdSummary.id),
+              ],
+              summaryError: "",
+            }
+          : current,
+      );
+    } catch (error) {
+      setSummaryActionError(errorMessage(error));
+    } finally {
+      setSummaryBusy(false);
+    }
+  }
+
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 md:flex">
       <aside className="border-b border-slate-800 bg-slate-950 p-5 md:min-h-screen md:w-64 md:border-b-0 md:border-r">
@@ -403,14 +438,30 @@ export default function Home() {
                 Case overview
               </span>
             </li>
-            {["Evidence", "Timeline", "Reports"].map((item) => (
-              <li key={item}>
-                <span
-                  aria-disabled="true"
-                  className="block rounded-lg px-3 py-2 text-sm text-slate-600"
-                >
-                  {item} <span className="text-xs">(planned)</span>
-                </span>
+            {[
+              { label: "Management", href: "#management-panel", requiresCase: false },
+              { label: "Evidence", href: "#evidence-storage-heading", requiresCase: true },
+              { label: "Timeline", href: "#timeline-heading", requiresCase: true },
+              { label: "Reports", href: "#reporting-panel", requiresCase: true },
+            ].map(({ label, href, requiresCase }) => (
+              <li key={label}>
+                {authState === "ready" &&
+                selectedOrganizationId &&
+                (!requiresCase || selectedCase) ? (
+                  <a
+                    className="block rounded-lg px-3 py-2 text-sm text-slate-400 hover:bg-slate-800 hover:text-white"
+                    href={href}
+                  >
+                    {label}
+                  </a>
+                ) : (
+                  <span
+                    aria-disabled="true"
+                    className="block rounded-lg px-3 py-2 text-sm text-slate-600"
+                  >
+                    {label}
+                  </span>
+                )}
               </li>
             ))}
           </ul>
@@ -447,7 +498,12 @@ export default function Home() {
             <p className="text-xs font-semibold tracking-[0.16em] text-cyan-300">
               CASE MANAGEMENT
             </p>
-            <h1 className="mt-1 text-2xl font-semibold text-white">Case overview</h1>
+            <h1
+              className="mt-1 text-2xl font-semibold text-white"
+              id="case-overview"
+            >
+              Case overview
+            </h1>
           </div>
           {identity && (
             <div className="flex items-center gap-3">
@@ -576,6 +632,35 @@ export default function Home() {
                       </div>
                     )}
                   </section>
+
+                  {selectedOrganizationId && (
+                    <ManagementPanel
+                      key={`${selectedOrganizationId}:${selectedCase?.id ?? "no-case"}`}
+                      caseRecord={selectedCase}
+                      caseRole={caseRole}
+                      csrfToken={csrfToken}
+                      onCaseCreated={(record) =>
+                        setCaseList((current) => ({
+                          organizationId: selectedOrganizationId,
+                          cases:
+                            current.organizationId === selectedOrganizationId
+                              ? [...current.cases, record]
+                              : [record],
+                          selectedCaseId: record.id,
+                        }))
+                      }
+                      onCaseUpdated={(record) =>
+                        setCaseList((current) => ({
+                          ...current,
+                          cases: current.cases.map((item) =>
+                            item.id === record.id ? { ...item, ...record } : item,
+                          ),
+                        }))
+                      }
+                      organizationId={selectedOrganizationId}
+                      organizationRole={selectedOrganizationRole ?? ""}
+                    />
+                  )}
 
                   {caseError && (
                     <div
@@ -754,6 +839,24 @@ export default function Home() {
                             AI output is an unreviewed draft, not an examiner finding.
                             Verify each citation before relying on it.
                           </p>
+                          {canWriteCase && selectedCase.status === "open" && (
+                            <button
+                              className="mt-4 rounded-lg border border-violet-800 px-3 py-2 text-sm font-medium text-violet-200 disabled:opacity-50"
+                              disabled={summaryBusy || loadingCase}
+                              onClick={() => void createAISummary()}
+                              type="button"
+                            >
+                              {summaryBusy ? "Generating draft…" : "Generate local AI summary"}
+                            </button>
+                          )}
+                          {summaryActionError && (
+                            <p
+                              className="mt-3 rounded-lg border border-rose-900 bg-rose-950/50 p-3 text-sm text-rose-200"
+                              role="alert"
+                            >
+                              {summaryActionError}
+                            </p>
+                          )}
                           {summaryError && (
                             <p
                               className="mt-4 rounded-lg border border-rose-900 bg-rose-950/50 p-3 text-sm text-rose-200"

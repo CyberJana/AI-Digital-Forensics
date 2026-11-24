@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import EvidenceIntegrityPanel from "./EvidenceIntegrityPanel";
 
 const API_BASE_URL = (
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
@@ -60,6 +61,7 @@ export default function EvidenceStoragePanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [acquiredAt, setAcquiredAt] = useState(localDateTimeValue);
+  const [selectedEvidenceId, setSelectedEvidenceId] = useState<string | null>(null);
 
   const reload = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -233,27 +235,52 @@ export default function EvidenceStoragePanel({
       ) : (
         <ul className="mt-4 divide-y divide-slate-800">
           {evidence.map((item) => (
-            <li
-              className="flex flex-wrap items-center justify-between gap-3 py-3"
-              key={item.id}
-            >
-              <div className="min-w-0">
-                <p className="font-medium text-white">
-                  {item.evidence_number} · {item.name}
-                </p>
-                <p className="mt-1 text-xs text-slate-500">
-                  {formatBytes(item.size_bytes)} · SHA-256 {item.original_sha256}
-                </p>
+            <li className="py-3" key={item.id}>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="font-medium text-white">
+                    {item.evidence_number} · {item.name}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {formatBytes(item.size_bytes)} · SHA-256 {item.original_sha256}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {item.binary_available ? (
+                    <a
+                      className="rounded-lg border border-cyan-800 px-3 py-2 text-xs font-medium text-cyan-200 hover:border-cyan-400"
+                      href={`${API_BASE_URL}/evidence/${item.id}/binary`}
+                    >
+                      Download verified file
+                    </a>
+                  ) : (
+                    <span className="text-xs text-slate-500">Metadata only</span>
+                  )}
+                  <button
+                    aria-controls={`evidence-details-${item.id}`}
+                    aria-expanded={selectedEvidenceId === item.id}
+                    className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200"
+                    onClick={() =>
+                      setSelectedEvidenceId((current) =>
+                        current === item.id ? null : item.id,
+                      )
+                    }
+                    type="button"
+                  >
+                    {selectedEvidenceId === item.id ? "Hide details" : "Custody & hash details"}
+                  </button>
+                </div>
               </div>
-              {item.binary_available ? (
-                <a
-                  className="rounded-lg border border-cyan-800 px-3 py-2 text-xs font-medium text-cyan-200 hover:border-cyan-400"
-                  href={`${API_BASE_URL}/evidence/${item.id}/binary`}
-                >
-                  Download verified file
-                </a>
-              ) : (
-                <span className="text-xs text-slate-500">Metadata only</span>
+              {selectedEvidenceId === item.id && (
+                <div id={`evidence-details-${item.id}`}>
+                  <EvidenceIntegrityPanel
+                    canWrite={canWrite && caseStatus === "open"}
+                    caseId={caseId}
+                    csrfToken={csrfToken}
+                    evidenceId={item.id}
+                    originalSha256={item.original_sha256}
+                  />
+                </div>
               )}
             </li>
           ))}

@@ -283,7 +283,7 @@ export default function ReportingPanel({
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" id="reporting-panel">
       {loadError && (
         <p className="rounded-lg border border-rose-900 bg-rose-950/50 p-3 text-sm text-rose-200" role="alert">
           {loadError}
